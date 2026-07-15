@@ -3,8 +3,9 @@
 ════════════════════════════════════════════════════════════════════
  IP·AI 뉴스 브리핑 — 데이터 파이프라인 (모듈 1)
 ════════════════════════════════════════════════════════════════════
- 역할  : 지식재산처(구 특허청) 보도자료 + 구글 뉴스 RSS를 수집하여
-         날짜별 JSON 파일(data/news_YYYYMMDD.json)로 저장
+ 역할  : ① 지식재산처(지재처) 보도자료 전량 수집
+         ② config/keywords.json의 구독 키워드로 구글 뉴스 수집
+         → 날짜별 JSON 파일(data/news_YYYYMMDD.json)로 저장
  실행  : python data_pipeline.py
  자동화: GitHub Actions가 매일 아침 7시(KST)에 자동 실행 (모듈 2)
 ════════════════════════════════════════════════════════════════════
@@ -13,7 +14,7 @@
 import base64
 import json
 import re
-import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote, urljoin
@@ -23,7 +24,6 @@ import requests
 from bs4 import BeautifulSoup
 
 # ── 회사 PC 등 SSL 검사(사내 보안 프로그램) 환경 대응 ──────────────
-# truststore가 있으면 운영체제 인증서 저장소를 사용 (없어도 무방)
 try:
     import truststore
 
@@ -32,34 +32,36 @@ except Exception:
     pass
 
 # ════════════════════════════════════════════════════════════════════
-# 설정 (여기만 수정하면 수집 대상을 바꿀 수 있습니다)
+# 기본 설정
 # ════════════════════════════════════════════════════════════════════
 
-KST = timezone(timedelta(hours=9))  # 한국 시간
+KST = timezone(timedelta(hours=9))
 TODAY = datetime.now(KST).date()
 
-# 저장 폴더: 이 파일이 있는 위치 기준 (어디서 실행해도 동일)
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
+CONFIG_PATH = BASE_DIR / "config" / "keywords.json"
 
 # 구글 뉴스: 최근 몇 시간 이내 기사만 수집할지
 LOOKBACK_HOURS = 48
-# 지식재산처 보도자료: 최근 며칠 이내 것만 수집할지
-MOIP_LOOKBACK_DAYS = 3
-# 원문 본문 요약을 시도할 최대 기사 수 (실행 시간 제한)
+# 원문 본문 수집을 시도할 최대 기사 수 (실행 시간 제한)
 MAX_ARTICLE_FETCH = 25
 
-# 지식재산처(구 특허청) 보도자료 공식 RSS
+# 지식재산처(지재처) 보도자료 공식 RSS — 전량 수집 대상
+MOIP_CATEGORY = "지재처 보도자료"
 MOIP_RSS_URL = "https://www.moip.go.kr/ko/report/UXmlRssApp.do?menuCd=SCD0200618"
 MOIP_BASE_URL = "https://www.moip.go.kr"
 
-# 구글 뉴스 검색 키워드 → 카테고리 매핑
-# (검색어의 when:2d = 최근 2일 이내 기사만)
-GOOGLE_NEWS_QUERIES = [
-    {"query": '"AI 특허" OR "AI 지식재산" OR "인공지능 특허" when:2d', "category": "AI+IP"},
-    {"query": '"생성형 AI 저작권" OR "AI 저작권" OR "AI 발명" when:2d', "category": "AI+IP"},
-    {"query": '"생성형 AI" OR "오픈AI" OR "챗GPT" OR "앤스로픽" when:1d', "category": "AI 기술"},
-]
+# 기본 구독 키워드: (AI OR 인공지능) AND (지식재산 OR 특허 OR 디자인)
+# → 대시보드의 [설정]에서 자유롭게 수정·추가할 수 있습니다.
+DEFAULT_CONFIG = {
+    "subscriptions": [
+        {
+            "name": "AI·지식재산",
+            "groups": [["AI", "인공지능"], ["지식재산", "특허", "디자인"]],
+        }
+    ]
+}
 
 # 기사에서 추출할 핵심 키워드 태그 후보
 KEYWORD_TAGS = [
@@ -71,6 +73,36 @@ KEYWORD_TAGS = [
 ]
 
 REQUEST_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) NewsBriefBot/1.0"}
+
+
+# ════════════════════════════════════════════════════════════════════
+# 구독 키워드 설정 로드
+# ════════════════════════════════════════════════════════════════════
+
+def load_keyword_config() -> dict:
+    """config/keywords.json 로드 (없으면 기본값 생성)"""
+    try:
+        if CONFIG_PATH.exists():
+            cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            if cfg.get("subscriptions"):
+                return cfg
+    except Exception as e:
+        print(f"  [경고] 키워드 설정 읽기 실패, 기본값 사용 ({e})")
+    CONFIG_PATH.parent.mkdir(exist_ok=True)
+    CONFIG_PATH.write_text(json.dumps(DEFAULT_CONFIG, ensure_ascii=False, indent=2), encoding="utf-8")
+    return DEFAULT_CONFIG
+
+
+def build_query(groups: list[list[str]]) -> str:
+    """동의어 그룹 목록 → 구글 뉴스 검색식.
+    [["AI","인공지능"], ["특허","디자인"]] → ("AI" OR "인공지능") ("특허" OR "디자인")
+    (그룹 사이는 AND, 그룹 안은 OR)"""
+    parts = []
+    for group in groups:
+        words = [w.strip() for w in group if w.strip()]
+        if words:
+            parts.append("(" + " OR ".join(f'"{w}"' for w in words) + ")")
+    return " ".join(parts) + " when:2d"
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -131,9 +163,8 @@ def ai_summarize(text: str) -> str | None:
     """
     AI 3줄 요약 함수 (템플릿).
 
-    사용법: GitHub 저장소 → Settings → Secrets → OPENAI_API_KEY 등록 후
-    아래 주석을 해제하면 작동합니다. 키가 없으면 None을 반환하고,
-    호출부에서 자동으로 '앞 3문장 요약'으로 대체됩니다.
+    GitHub 저장소 → Settings → Secrets → OPENAI_API_KEY 등록 시 작동.
+    키가 없으면 None을 반환하고 호출부에서 '앞 3문장 요약'으로 대체됩니다.
     """
     import os
 
@@ -173,7 +204,7 @@ def ai_summarize(text: str) -> str | None:
 
 
 # ════════════════════════════════════════════════════════════════════
-# 수집기 1 — 지식재산처(구 특허청) 보도자료
+# 수집기 1 — 지식재산처(지재처) 보도자료 : RSS 전량 수집
 # ════════════════════════════════════════════════════════════════════
 
 def fetch_moip_detail_date(url: str) -> str | None:
@@ -186,50 +217,58 @@ def fetch_moip_detail_date(url: str) -> str | None:
 
 
 def collect_moip(known_links: set, known_titles: set) -> list[dict]:
-    """지식재산처 보도자료 RSS 수집"""
-    print("\n[1/2] 지식재산처(특허청) 보도자료 수집 중...")
+    """지재처 보도자료 RSS 전량 수집 (이미 수집된 것은 건너뜀)"""
+    print(f"\n[1/2] 지식재산처(지재처) 보도자료 수집 중... (전량, 신규분만)")
     articles = []
     resp = http_get(MOIP_RSS_URL)
     if resp is None:
         return articles
 
     feed = feedparser.parse(resp.content)
-    print(f"  RSS 항목 {len(feed.entries)}건 확인, 최신 20건 검사")
+    entries = feed.entries
+    print(f"  RSS 항목 {len(entries)}건 확인")
 
-    cutoff = TODAY - timedelta(days=MOIP_LOOKBACK_DAYS)
-    for entry in feed.entries[:20]:
+    new_count = 0
+    for i, entry in enumerate(entries):
         try:
             title = (entry.get("title") or "").strip()
             link = urljoin(MOIP_BASE_URL, entry.get("link") or "")
-            if not title or link in known_links or title in known_titles:
+            title_key = re.sub(r"\s+", "", title)
+            if not title or link in known_links or title_key in known_titles:
                 continue
 
             # 상세 페이지에서 등록일 확인 (실패 시 오늘 날짜)
             pub_date = fetch_moip_detail_date(link) or str(TODAY)
-            if datetime.strptime(pub_date, "%Y-%m-%d").date() < cutoff:
-                continue  # 오래된 보도자료는 제외
+            time.sleep(0.1)  # 서버 부담 방지
 
             body = clean_html(entry.get("summary", ""))
+            content = body[:6000]
             summary = ai_summarize(body) or first_sentences(body, 3)
 
             articles.append({
                 "title": title,
                 "link": link,
-                "category": "특허청",
+                "category": MOIP_CATEGORY,
                 "date": pub_date,
                 "summary": summary,
-                "source": "지식재산처 보도자료",
+                "content": content,
+                "source": "지식재산처",
                 "keywords": extract_keywords(title + " " + summary),
             })
-            print(f"  + {title[:50]}")
+            known_links.add(link)
+            known_titles.add(title_key)
+            new_count += 1
+            if new_count % 25 == 0:
+                print(f"  ... {new_count}건 수집 (전체 {len(entries)}건 중 {i + 1}번째 확인)")
         except Exception as e:
             print(f"  [경고] 항목 처리 실패 ({type(e).__name__}: {e})")
             continue
+    print(f"  신규 {new_count}건 수집 완료")
     return articles
 
 
 # ════════════════════════════════════════════════════════════════════
-# 수집기 2 — 구글 뉴스 RSS (키워드 검색)
+# 수집기 2 — 구글 뉴스 RSS (구독 키워드 검색)
 # ════════════════════════════════════════════════════════════════════
 
 def resolve_gnews_link(link: str) -> str | None:
@@ -245,7 +284,7 @@ def resolve_gnews_link(link: str) -> str | None:
         m2 = re.search(rb"https?://[^\x00-\x20\x80-\xff]+", decoded)
         if m2:
             url = m2.group().decode("ascii", errors="ignore").rstrip("\\\"'")
-            if len(url) > 12:  # 유효한 URL만
+            if len(url) > 12:
                 return url
     except Exception:
         pass
@@ -280,12 +319,19 @@ def resolve_gnews_link(link: str) -> str | None:
 # 오류/안내 페이지가 본문으로 잘못 수집되는 것을 막는 문구 목록
 ERROR_PAGE_SIGNS = [
     "페이지를 찾을 수 없", "요청하신 페이지", "존재하지 않는 페이지",
-    "잘못된 접근", "삭제되었거나", "이용에 불편을", "점검 중입니다",
+    "잘못된 접근", "삭제되었거나", "삭제되어 사용할 수 없", "이용에 불편을",
+    "점검 중입니다", "주소가 잘못", "찾으시는 페이지", "변경 또는 삭제",
+]
+
+# 본문이 아닌 사이트 메뉴/광고 문단을 걸러내는 문구 목록
+JUNK_PARAGRAPH_SIGNS = [
+    "즐겨찾기", "시작페이지", "회원가입", "로그인", "무단전재", "재배포 금지",
+    "구독하기", "네이버 뉴스스탠드", "저작권자 ©", "패밀리사이트",
 ]
 
 
-def fetch_article_summary(url: str) -> str:
-    """기사 원문 페이지에서 본문 앞부분을 추출해 요약 생성 (실패 시 빈 문자열)"""
+def fetch_article_body(url: str) -> str:
+    """기사 원문 페이지에서 본문 텍스트 추출 (실패 시 빈 문자열)"""
     resp = http_get(url, timeout=8)
     if resp is None:
         return ""
@@ -294,31 +340,38 @@ def fetch_article_summary(url: str) -> str:
         for bad in soup.find_all(["script", "style", "nav", "footer", "header", "aside"]):
             bad.decompose()
         paragraphs = [p.get_text(strip=True) for p in soup.find_all("p")]
-        body = " ".join(p for p in paragraphs if len(p) > 30)
+        clean_paras = [
+            p for p in paragraphs
+            if len(p) > 30 and not any(sign in p for sign in JUNK_PARAGRAPH_SIGNS)
+        ]
+        body = " ".join(clean_paras)
         if len(body) < 80 or any(sign in body[:250] for sign in ERROR_PAGE_SIGNS):
             return ""  # 오류 페이지이거나 본문 추출 실패
-        return first_sentences(body, 3)
+        return body[:3000]
     except Exception:
         return ""
 
 
-def collect_google_news(known_links: set, known_titles: set) -> list[dict]:
-    """구글 뉴스 RSS 키워드 검색 수집"""
-    print("\n[2/2] 구글 뉴스 수집 중...")
+def collect_google_news(subscriptions: list[dict], known_links: set, known_titles: set) -> list[dict]:
+    """구독 키워드별 구글 뉴스 RSS 수집"""
+    print("\n[2/2] 구글 뉴스 수집 중... (구독 키워드)")
     articles = []
     cutoff_utc = datetime.now(timezone.utc) - timedelta(hours=LOOKBACK_HOURS)
     fetch_budget = MAX_ARTICLE_FETCH
 
-    for cfg in GOOGLE_NEWS_QUERIES:
-        query, category = cfg["query"], cfg["category"]
+    for sub in subscriptions:
+        name = sub.get("name", "구독")
+        query = build_query(sub.get("groups", []))
+        if query.strip() == "when:2d":
+            continue
         url = f"https://news.google.com/rss/search?q={quote(query)}&hl=ko&gl=KR&ceid=KR:ko"
-        print(f"  검색어: {query} → [{category}]")
+        print(f"  구독 [{name}] 검색식: {query}")
         resp = http_get(url)
         if resp is None:
             continue
         feed = feedparser.parse(resp.content)
 
-        for entry in feed.entries[:25]:
+        for entry in feed.entries[:30]:
             try:
                 raw_title = (entry.get("title") or "").strip()
                 # 구글 뉴스 제목은 "기사제목 - 언론사" 형식
@@ -344,15 +397,14 @@ def collect_google_news(known_links: set, known_titles: set) -> list[dict]:
                 if not title or link in known_links or title_key in known_titles:
                     continue
 
-                # 원문 URL 복원 후 본문 요약 시도 (실패하면 제목으로 대체)
-                summary = ""
-                real_url = None
+                # 원문 URL 복원 후 본문 수집 시도 (실패하면 제목으로 대체)
+                summary, content, real_url = "", "", None
                 if fetch_budget > 0:
                     fetch_budget -= 1
                     real_url = resolve_gnews_link(link)
                     if real_url:
-                        body = fetch_article_summary(real_url)
-                        summary = ai_summarize(body) or body
+                        content = fetch_article_body(real_url)
+                        summary = ai_summarize(content) or first_sentences(content, 3)
                 if len(summary) < 40:
                     summary = clean_html(entry.get("summary", ""))
                     if len(summary) < 10 or summary.startswith(title[:20]):
@@ -361,9 +413,10 @@ def collect_google_news(known_links: set, known_titles: set) -> list[dict]:
                 articles.append({
                     "title": title,
                     "link": real_url or link,
-                    "category": category,
+                    "category": name,
                     "date": pub_date,
                     "summary": summary,
+                    "content": content,
                     "source": source_name or "구글 뉴스",
                     "keywords": extract_keywords(title + " " + summary),
                 })
@@ -416,13 +469,17 @@ def main():
     print(f" IP·AI 뉴스 브리핑 파이프라인 — {datetime.now(KST):%Y-%m-%d %H:%M} (KST)")
     print("=" * 60)
 
+    config = load_keyword_config()
+    subs = config.get("subscriptions", [])
+    print(f"구독 키워드 {len(subs)}건: {', '.join(s.get('name', '?') for s in subs)}")
+
     DATA_DIR.mkdir(exist_ok=True)
     known_links, known_titles = load_known_articles()
     print(f"기존 수집 기사: {len(known_links)}건 (중복 제외 처리)")
 
     collected = []
     collected += collect_moip(known_links, known_titles)
-    collected += collect_google_news(known_links, known_titles)
+    collected += collect_google_news(subs, known_links, known_titles)
 
     out_path = save_articles(collected)
     print("\n" + "=" * 60)
