@@ -45,7 +45,8 @@ CONFIG_PATH = BASE_DIR / "config" / "keywords.json"
 # 구글 뉴스: 최근 몇 시간 이내 기사만 수집할지
 LOOKBACK_HOURS = 48
 # 원문 본문 수집을 시도할 최대 기사 수 (실행 시간 제한)
-MAX_ARTICLE_FETCH = 25
+# 구글뉴스 중계링크는 봇 확인 페이지가 떠서 반드시 원문 복원이 필요 → 넉넉하게
+MAX_ARTICLE_FETCH = 120
 
 # 지식재산처(지재처) 보도자료 공식 RSS — 전량 수집 대상
 MOIP_CATEGORY = "지재처 보도자료"
@@ -56,6 +57,10 @@ MOIP_BASE_URL = "https://www.moip.go.kr"
 # (쉼표 안 = OR, 그룹 사이 = AND)
 DEFAULT_CONFIG = {
     "subscriptions": [
+        {
+            "name": "지재처 관련뉴스",
+            "groups": [["지식재산처", "지재처", "특허청"]],
+        },
         {
             "name": "AI·지식재산",
             "groups": [["AI", "인공지능"], ["지식재산", "특허", "디자인"]],

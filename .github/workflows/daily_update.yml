@@ -8,9 +8,10 @@ name: Daily News Update
 
 on:
   schedule:
-    # GitHub Actions는 UTC 기준 → UTC 22:00 = KST 다음날 07:00
-    - cron: "0 22 * * *"
-  # Actions 탭에서 [Run workflow] 버튼으로 수동 실행도 가능
+    # GitHub Actions는 UTC 기준 (지재처 보도자료는 오전 9시 이후 게시)
+    - cron: "30 0 * * *"   # KST 09:30
+    - cron: "0 8 * * *"    # KST 17:00
+  # Actions 탭 [Run workflow] 버튼 또는 대시보드의 [지금 수집] 버튼으로 수동 실행 가능
   workflow_dispatch:
 
 # 자동 커밋을 위한 쓰기 권한
