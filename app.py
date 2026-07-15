@@ -183,6 +183,7 @@ st.markdown(f"""
 .stApp {{ background: var(--page-bg); }}
 html, body, [class*="css"] {{ font-family: var(--font-body); }}
 #MainMenu, footer {{ visibility: hidden; }}
+header[data-testid="stHeader"] {{ display: none; }}
 .block-container {{ padding-top: 1.2rem; max-width: 1200px; }}
 
 /* ── 마스트헤드 (신문 제호) ─────────────────────────── */
@@ -347,7 +348,7 @@ def human_date(d) -> str:
 # URL 상태 (view / cat / src / sel)
 # ════════════════════════════════════════════════════════════════════
 
-VIEWS = {"today": "📅 오늘", "week": "🗓️ 최근 7일", "all": "📰 전체 기사", "trend": "📈 트렌드"}
+VIEWS = {"today": "오늘", "week": "최근 7일", "all": "전체 기사", "trend": "트렌드"}
 qp = st.query_params
 view = qp.get("view", "week")
 if view not in VIEWS:
@@ -428,16 +429,16 @@ def article_dialog(row):
 # 설정 다이얼로그
 # ════════════════════════════════════════════════════════════════════
 
-@st.dialog("⚙️ 설정", width="large")
+@st.dialog("설정", width="large")
 def settings_dialog():
     fs = st.slider("본문 글자 크기", 13, 24, value=st.session_state.reader_font, key="reader_font_widget")
     st.session_state.reader_font = fs
     st.divider()
     st.markdown("##### 구독 키워드")
     if get_secret("GITHUB_TOKEN"):
-        st.caption("✅ 영구 저장 사용 가능 — 저장하면 모든 사용자에게 적용되고, 다음날 수집부터 반영됩니다.")
+        st.caption("영구 저장 사용 가능 — 저장하면 모든 사용자에게 적용되고, 다음날 수집부터 반영됩니다.")
     else:
-        st.caption("⚠️ 현재 임시 저장만 가능합니다. 관리자가 Streamlit Secrets에 GITHUB_TOKEN을 등록하면 영구 저장됩니다.")
+        st.caption("현재 임시 저장만 가능합니다. 관리자가 Streamlit Secrets에 GITHUB_TOKEN을 등록하면 영구 저장됩니다.")
     st.caption(
         "쉼표(,) = 같은 의미(OR) · 세미콜론(;) = 반드시 함께(AND)  \n"
         "예: `AI, 인공지능 ; 지식재산, 특허, 디자인` → (AI 또는 인공지능) 이면서 (지식재산·특허·디자인 중 하나)"
@@ -451,7 +452,7 @@ def settings_dialog():
         num_rows="dynamic", hide_index=True, width="stretch", key="kw_editor",
     )
     st.caption("행 추가(+)로 구독을 늘릴 수 있습니다. 지재처 보도자료는 키워드와 무관하게 항상 전량 수집됩니다.")
-    if st.button("💾 저장", type="primary", width="stretch"):
+    if st.button("저장", type="primary", width="stretch"):
         subs = []
         for _, r in edited.iterrows():
             name = str(r.get("구독명") or "").strip()
@@ -527,7 +528,7 @@ with rail_col:
     nav.append("</div>")
     st.markdown("".join(nav), unsafe_allow_html=True)
     st.write("")
-    if st.button("⚙️ 설정 · 키워드", width="stretch"):
+    if st.button("키워드 설정", width="stretch"):
         settings_dialog()
 
 # ── 필터 적용 ──────────────────────────────────────────
@@ -575,7 +576,7 @@ with feed_col:
                 .properties(height=300)
             )
             st.altair_chart(chart2, width="stretch")
-        with st.expander("📄 데이터 표로 보기"):
+        with st.expander("데이터 표로 보기"):
             st.dataframe(
                 df[["date", "category", "source", "title", "link"]]
                 .rename(columns={"date": "날짜", "category": "카테고리", "source": "소스", "title": "제목", "link": "링크"}),
@@ -585,8 +586,7 @@ with feed_col:
     else:
         # ── 피드 뷰 ───────────────────────────────────
         cat_counts = df_v["category"].value_counts()
-        view_name = VIEWS[view].split(" ", 1)[1] if " " in VIEWS[view] else VIEWS[view]
-        tiles = [f'<div class="stat-tile"><div class="label">수집 기사 ({view_name})</div><div class="value">{len(df_v):,}</div></div>']
+        tiles = [f'<div class="stat-tile"><div class="label">수집 기사 ({VIEWS[view]})</div><div class="value">{len(df_v):,}</div></div>']
         for c in ALL_CATEGORIES[:3]:
             tiles.append(
                 f'<div class="stat-tile" style="border-top-color:{CAT_CHART.get(c, "#999")}">'
@@ -594,7 +594,7 @@ with feed_col:
             )
         st.markdown(f'<div class="stat-row">{"".join(tiles)}</div>', unsafe_allow_html=True)
 
-        q = st.text_input("검색", placeholder="🔍 검색 — 제목·요약·본문에서 찾습니다",
+        q = st.text_input("검색", placeholder="검색 — 제목·요약·본문에서 찾습니다",
                           label_visibility="collapsed", key="search_q")
         if q.strip():
             qq = q.strip().lower()
@@ -605,7 +605,7 @@ with feed_col:
             ]
 
         n = len(filtered)
-        st.markdown(f'<div class="section-label">기사 {n}건 — 제목을 누르면 본문 팝업</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="section-label">기사 {n}건 · 카드를 누르면 본문이 열립니다</div>', unsafe_allow_html=True)
         if n == 0:
             st.warning("조건에 맞는 기사가 없습니다.")
         MAX_SHOW = 80
