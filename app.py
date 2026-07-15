@@ -29,6 +29,14 @@ import requests
 import streamlit as st
 from streamlit.components.v1 import html as components_html
 
+# 회사 PC 등 SSL 검사(사내 보안 프로그램) 환경 대응 — 클라우드에서는 무해
+try:
+    import truststore
+
+    truststore.inject_into_ssl()
+except Exception:
+    pass
+
 KST = timezone(timedelta(hours=9))
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -139,9 +147,12 @@ def store_write(path: str, obj: dict) -> bool:
 
 
 # ── 로그인(쿠키) ────────────────────────────────────────────────────
+# 회원가입 없음: Secrets의 ALLOWED_USERS(사번 목록)에 있는 사번만 로그인 가능
+# 아이디 = 사번, 비밀번호 = 사번
 
-def hash_pw(uid: str, pw: str) -> str:
-    return hashlib.sha256(f"{uid}::{pw}::ipai-salt".encode()).hexdigest()
+def allowed_users() -> list[str]:
+    raw = get_secret("ALLOWED_USERS", "")
+    return [u.strip() for u in re.split(r"[,;\s]+", raw) if u.strip()]
 
 
 def make_token(uid: str) -> str:
@@ -169,16 +180,16 @@ def set_auth_cookie(token: str, max_age: int = 31536000):
 
 
 def get_current_user() -> str | None:
-    if st.session_state.get("auth_user"):
-        return st.session_state.auth_user
-    try:
-        token = st.context.cookies.get("nb_auth", "")
-    except Exception:
-        token = ""
-    if token:
-        uid = verify_token(token)
-        if uid:
-            return uid
+    uid = st.session_state.get("auth_user")
+    if not uid:
+        try:
+            token = st.context.cookies.get("nb_auth", "")
+        except Exception:
+            token = ""
+        uid = verify_token(token) if token else None
+    # 목록에서 제외된 사번은 자동으로 접근 차단
+    if uid and uid in allowed_users():
+        return uid
     return None
 
 
@@ -619,42 +630,19 @@ def article_dialog(row):
 def login_dialog(msg: str = ""):
     if msg:
         st.info(msg)
-    users = store_read("users.json")
-    tab_in, tab_up = st.tabs(["로그인", "회원가입"])
-    with tab_in:
-        uid = st.text_input("아이디", key="li_id")
-        pw = st.text_input("비밀번호", type="password", key="li_pw")
-        if st.button("로그인", type="primary", width="stretch", key="li_btn"):
-            u = uid.strip()
-            if u in users and users[u] == hash_pw(u, pw):
-                st.session_state.auth_user = u
-                st.success("로그인 완료 — 잠시만 기다려 주세요.")
-                set_auth_cookie(make_token(u))
-            else:
-                st.error("아이디 또는 비밀번호가 올바르지 않습니다.")
-    with tab_up:
-        nid = st.text_input("아이디 (2~20자, 한글·영문·숫자)", key="su_id")
-        npw = st.text_input("비밀번호 (4자 이상)", type="password", key="su_pw")
-        npw2 = st.text_input("비밀번호 확인", type="password", key="su_pw2")
-        if st.button("가입하기", type="primary", width="stretch", key="su_btn"):
-            u = nid.strip()
-            if not re.fullmatch(r"[가-힣A-Za-z0-9_-]{2,20}", u):
-                st.error("아이디 형식이 올바르지 않습니다.")
-            elif u in users:
-                st.error("이미 사용 중인 아이디입니다.")
-            elif len(npw) < 4:
-                st.error("비밀번호는 4자 이상이어야 합니다.")
-            elif npw != npw2:
-                st.error("비밀번호 확인이 일치하지 않습니다.")
-            else:
-                users2 = dict(users)
-                users2[u] = hash_pw(u, npw)
-                if store_write("users.json", users2):
-                    st.session_state.auth_user = u
-                    st.success("가입 완료 — 자동 로그인됩니다.")
-                    set_auth_cookie(make_token(u))
-                else:
-                    st.error("계정 저장에 실패했습니다. 관리자 설정(GITHUB_TOKEN)을 확인하세요.")
+    if not allowed_users():
+        st.warning("관리자가 Streamlit Secrets에 ALLOWED_USERS(사번 목록)를 등록해야 로그인할 수 있습니다.")
+    uid = st.text_input("사번", key="li_id")
+    pw = st.text_input("비밀번호", type="password", key="li_pw",
+                       help="비밀번호는 본인 사번과 동일합니다.")
+    if st.button("로그인", type="primary", width="stretch", key="li_btn"):
+        u = uid.strip()
+        if u and u in allowed_users() and pw.strip() == u:
+            st.session_state.auth_user = u
+            st.success("로그인 완료 — 잠시만 기다려 주세요.")
+            set_auth_cookie(make_token(u))
+        else:
+            st.error("사번 또는 비밀번호가 올바르지 않습니다.")
 
 
 @st.dialog("설정", width="large")
@@ -833,7 +821,7 @@ with rail_col:
             need_login_msg = need_login_msg or " "
         if st.button("내보내기", width="stretch"):
             st.session_state._open_export = True
-        st.caption("로그인하면 스크랩·키워드 설정·즉시 수집을 사용할 수 있습니다.")
+        st.caption("사번으로 로그인하면 스크랩·키워드 설정·즉시 수집을 사용할 수 있습니다.")
 
 # ── 필터 적용 ──────────────────────────────────────────
 if sel_cat == "__scrap__" and current_user:
