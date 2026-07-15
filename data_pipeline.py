@@ -52,14 +52,18 @@ MOIP_CATEGORY = "지재처 보도자료"
 MOIP_RSS_URL = "https://www.moip.go.kr/ko/report/UXmlRssApp.do?menuCd=SCD0200618"
 MOIP_BASE_URL = "https://www.moip.go.kr"
 
-# 기본 구독 키워드: (AI OR 인공지능) AND (지식재산 OR 특허 OR 디자인)
-# → 대시보드의 [설정]에서 자유롭게 수정·추가할 수 있습니다.
+# 기본 구독 키워드 — 대시보드의 [설정]에서 자유롭게 수정·추가할 수 있습니다.
+# (쉼표 안 = OR, 그룹 사이 = AND)
 DEFAULT_CONFIG = {
     "subscriptions": [
         {
             "name": "AI·지식재산",
             "groups": [["AI", "인공지능"], ["지식재산", "특허", "디자인"]],
-        }
+        },
+        {
+            "name": "AI 업계",
+            "groups": [["오픈AI", "챗GPT", "앤스로픽", "클로드", "제미나이", "엔비디아", "생성형 AI"]],
+        },
     ]
 }
 
