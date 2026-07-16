@@ -40,11 +40,18 @@ streamlit run app.py
    GITHUB_REPO = "UNJUNGSAM/ip-ai-news-brief"
    AUTH_SECRET = "자동로그인 쿠키 서명용 임의 문자열 (아무거나 길게 한 번만 입력)"
    ALLOWED_USERS = "12345, 23456, 34567"   # 로그인 허용 사번 목록 (쉼표 구분)
+   GEMINI_API_KEY = "AI 3줄 요약용 Google AI Studio 키 (선택)"
    ```
 
 3. 갤럭시탭/폰 브라우저에서 열고 "홈 화면에 추가"
 
+## AI 3줄 요약 (선택)
+
+- Streamlit Secrets에 `GEMINI_API_KEY`(Google AI Studio 키)를 넣으면 활성화됩니다.
+- 기사 팝업에서 [AI 3줄 요약 생성] 버튼을 누른 사람만 그때그때 생성 → 비용 최소화.
+- 한 번 생성한 요약은 `store` 브랜치(`ai_summaries.json`)에 저장되어 다음부터 재사용(무료).
+- 모델 변경: `GEMINI_MODEL = "gemini-2.0-flash"` (기본값). 본문이 없는 기사는 요약 불가.
+
 ## 기타
 
-- AI 3줄 요약(선택): 저장소 Secrets에 `OPENAI_API_KEY` 등록 시 활성화
 - PDF 폰트: 나눔고딕(오픈폰트라이선스, `fonts/`)

@@ -639,6 +639,55 @@ def to_pdf_bytes(items: list[dict], subtitle: str) -> bytes | None:
 
 
 # ════════════════════════════════════════════════════════════════════
+# AI 요약 (Google Gemini) — 기사 열 때 그때그때 생성, store에 캐시
+# ════════════════════════════════════════════════════════════════════
+
+def ai_enabled() -> bool:
+    return bool(get_secret("GEMINI_API_KEY"))
+
+
+def get_ai_summary(aid: str) -> str | None:
+    return store_read("ai_summaries.json").get(aid)
+
+
+def save_ai_summary(aid: str, text: str):
+    data = dict(store_read("ai_summaries.json"))
+    data[aid] = text
+    store_write("ai_summaries.json", data)
+
+
+def gemini_summarize(title: str, body: str) -> str | None:
+    """Gemini로 임원 보고용 3줄 요약 생성 (실패 시 None)"""
+    api_key = get_secret("GEMINI_API_KEY")
+    text = (body or "").strip()
+    if not api_key or len(text) < 40:
+        return None
+    model = get_secret("GEMINI_MODEL", "gemini-2.0-flash")
+    prompt = (
+        "너는 지식재산·AI 분야 전문 뉴스 요약가다. 다음 기사를 임원 보고용으로 "
+        "핵심만 3줄로 요약해라. 각 줄은 '- '로 시작하고, 사실 위주로 간결하게 쓰되 "
+        "추측이나 사족은 넣지 마라.\n\n"
+        f"[제목] {title}\n[본문] {text[:6000]}"
+    )
+    try:
+        r = requests.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+            params={"key": api_key},
+            json={
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"temperature": 0.2, "maxOutputTokens": 500},
+            },
+            timeout=30,
+        )
+        r.raise_for_status()
+        parts = r.json()["candidates"][0]["content"]["parts"]
+        out = "".join(p.get("text", "") for p in parts).strip()
+        return out or None
+    except Exception:
+        return None
+
+
+# ════════════════════════════════════════════════════════════════════
 # 다이얼로그
 # ════════════════════════════════════════════════════════════════════
 
@@ -674,6 +723,35 @@ def article_dialog(row):
 <div style="margin:.9rem 0;"><a class="open-btn" href="{link_esc}" target="_blank" rel="noopener">원문 기사 열기</a></div>
 """, unsafe_allow_html=True)
 
+    # ── AI 3줄 요약 (Gemini) ──────────────────────────────
+    if ai_enabled():
+        cached = get_ai_summary(row["id"])
+        if cached:
+            st.markdown(
+                f'<div class="reader-summary"><b>AI 요약</b><br>'
+                f'{html.escape(cached).replace(chr(10), "<br>")}</div>',
+                unsafe_allow_html=True,
+            )
+        elif current_user:
+            if body_text or summary_text:
+                if st.button("AI 3줄 요약 생성", key="dlg_ai"):
+                    with st.spinner("AI가 기사를 요약하는 중..."):
+                        out = gemini_summarize(row["title"], body_text or summary_text)
+                    if out:
+                        save_ai_summary(row["id"], out)
+                        st.markdown(
+                            f'<div class="reader-summary"><b>AI 요약</b><br>'
+                            f'{html.escape(out).replace(chr(10), "<br>")}</div>',
+                            unsafe_allow_html=True,
+                        )
+                    else:
+                        st.warning("요약을 생성하지 못했습니다. (본문이 짧거나 API 오류)")
+            else:
+                st.caption("본문이 없어 AI 요약을 만들 수 없습니다. 원문을 확인하세요.")
+        else:
+            st.caption("AI 요약은 로그인 후 사용할 수 있습니다.")
+
+    st.divider()
     if current_user:
         on = row["id"] in scrap_ids
         if st.button("스크랩 해제" if on else "이 기사 스크랩", key="dlg_scrap"):
