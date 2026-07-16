@@ -330,8 +330,19 @@ def resolve_gnews_link(link: str) -> str | None:
             headers={**REQUEST_HEADERS, "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"},
             timeout=12,
         )
-        m_url = re.search(r"https?://[^\"\\]+", api.text.split("garturlres")[-1])
-        return m_url.group() if m_url else None
+        # 구글 응답은 URL의 특수문자를 유니코드 이스케이프로 보낸다
+        # (예: '=' → '=', '&' → '&'). 게다가 백슬래시가 이중으로
+        # escape되어 있어, 종료 지점(\") 전까지 통째로 잡은 뒤 이스케이프를
+        # 해제해야 뒤쪽(?idxno=12345)이 잘리지 않는다.
+        tail = api.text.split("garturlres")[-1]
+        m_url = re.search(r'https?://.+?(?=\\",|"\])', tail)
+        if not m_url:
+            return None
+        raw = m_url.group()
+        raw = raw.replace("\\\\", "\\")  # 이중 백슬래시 → 단일
+        raw = re.sub(r"\\u([0-9a-fA-F]{4})", lambda mm: chr(int(mm.group(1), 16)), raw)
+        raw = raw.replace("\\/", "/")
+        return raw
     except Exception:
         return None
 
