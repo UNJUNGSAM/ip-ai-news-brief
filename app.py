@@ -308,8 +308,9 @@ a.stat-tile:hover {{ transform: translateY(-2px); }}
 .news-meta {{ font-size: .78rem; color: var(--ink-3); margin-bottom: .25rem; display: flex; align-items: center; gap: .45rem; flex-wrap: wrap; padding-right: 4.5rem; }}
 .cat-kicker {{ font-weight: 800; letter-spacing: .05em; font-size: .77rem; }}
 .news-title {{ font-family: var(--font-display); font-weight: 700; font-size: 1.08rem; color: var(--ink); line-height: 1.42; word-break: keep-all; }}
-.card-summary {{ margin-top: .4rem; font-size: .84rem; color: var(--ink-3); line-height: 1.55; word-break: keep-all;
-    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }}
+.card-summary {{ margin-top: .4rem; font-size: .84rem; color: var(--ink-3); line-height: 1.5; word-break: keep-all;
+    display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    max-height: calc(.84rem * 1.5 * 2); }}
 .tag-row {{ display: flex; gap: .3rem; flex-wrap: wrap; margin-top: .5rem; }}
 .tag-pill {{ background: var(--pill-bg); color: var(--pill-ink); border-radius: 999px; padding: .14rem .6rem; font-size: .72rem; font-weight: 600; }}
 a.scrap-btn {{ position: absolute; top: .85rem; right: .9rem; z-index: 2; font-size: .72rem; font-weight: 700; padding: .2rem .6rem; border-radius: 999px; text-decoration: none; color: var(--ink-3); border: 1px solid var(--hair); background: var(--card-bg); }}
@@ -611,23 +612,32 @@ def save_ai_summary(aid: str, text: str):
     store_write("ai_summaries.json", data)
 
 
-def _gemini_generate(prompt: str, max_tokens: int = 1024) -> str | None:
+# 용도별 모델(사고수준 low) — Secrets로 덮어쓸 수 있음
+#  · 기사 요약: 빠르고 가벼운 모델
+#  · 트렌드 분석: 조금 더 똑똑한 모델
+SUMMARY_MODEL = get_secret("GEMINI_SUMMARY_MODEL", "gemini-3.1-flash-lite")
+BRIEF_MODEL = get_secret("GEMINI_BRIEF_MODEL", "gemini-3.5-flash")
+
+
+def _gemini_generate(prompt: str, max_tokens: int = 1024,
+                     model: str = "", thinking: str = "low") -> str | None:
     """Gemini 텍스트 생성 공통 함수 (실패 시 None).
-    한국어는 토큰 소모가 커서 max_tokens를 넉넉히 준다. 출력이 토큰 한도에
-    걸려 잘리면(finishReason=MAX_TOKENS) 한 번 더 큰 한도로 재시도한다."""
+    - model: 사용할 모델 ID
+    - thinking: 사고수준('low' 등). 미지원 모델이면 자동으로 빼고 재시도.
+    한국어는 토큰 소모가 커서 max_tokens를 넉넉히 주고, 잘리면 한도를 늘려 재시도한다."""
     api_key = get_secret("GEMINI_API_KEY")
     if not api_key:
         return None
-    model = get_secret("GEMINI_MODEL", "gemini-2.0-flash")
+    model = model or get_secret("GEMINI_MODEL", "gemini-2.0-flash")
 
-    def _call(limit):
+    def _call(limit, use_thinking):
+        gen_cfg = {"temperature": 0.2, "maxOutputTokens": limit}
+        if use_thinking and thinking:
+            gen_cfg["thinkingConfig"] = {"thinkingLevel": thinking}
         r = requests.post(
             f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
             params={"key": api_key},
-            json={
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"temperature": 0.2, "maxOutputTokens": limit},
-            },
+            json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": gen_cfg},
             timeout=60,
         )
         r.raise_for_status()
@@ -637,9 +647,16 @@ def _gemini_generate(prompt: str, max_tokens: int = 1024) -> str | None:
         return text, cand.get("finishReason", "")
 
     try:
-        out, reason = _call(max_tokens)
-        if reason == "MAX_TOKENS":  # 잘렸으면 한도 2배로 한 번 더
-            out2, _ = _call(max_tokens * 2)
+        try:
+            out, reason = _call(max_tokens, True)
+        except Exception:
+            # thinkingConfig(사고수준)를 지원하지 않는 모델이면 빼고 재시도
+            out, reason = _call(max_tokens, False)
+        if reason == "MAX_TOKENS":  # 출력이 잘렸으면 한도 2배로 한 번 더
+            try:
+                out2, _ = _call(max_tokens * 2, True)
+            except Exception:
+                out2, _ = _call(max_tokens * 2, False)
             if out2 and len(out2) >= len(out):
                 out = out2
         return out or None
@@ -658,7 +675,7 @@ def gemini_summarize(title: str, body: str) -> str | None:
         "추측이나 사족은 넣지 마라.\n\n"
         f"[제목] {title}\n[본문] {text[:6000]}"
     )
-    return _gemini_generate(prompt, max_tokens=1024)
+    return _gemini_generate(prompt, max_tokens=1024, model=SUMMARY_MODEL, thinking="low")
 
 
 # ── AI 동향 브리핑 (기사 제목 기반) ──────────────────────────────────
@@ -703,7 +720,7 @@ def gemini_brief(period_label: str, titles_by_cat: dict) -> str | None:
         "규칙: 제목에 없는 사실은 지어내지 말 것. 과장·추측 금지. 간결하게.\n\n"
         f"[기사 제목 목록]\n{corpus[:12000]}"
     )
-    return _gemini_generate(prompt, max_tokens=3000)
+    return _gemini_generate(prompt, max_tokens=3000, model=BRIEF_MODEL, thinking="low")
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -727,9 +744,6 @@ def article_dialog(row):
         paras_html = f"<p>{html.escape(summary_text)}</p>"
     else:
         paras_html = '<p style="color:var(--ink-3)">본문 미리보기가 없는 기사입니다. 아래 버튼으로 원문을 확인하세요.</p>'
-    summary_html = ""
-    if summary_text and body_text:
-        summary_html = f'<div class="reader-summary"><b>요약</b> — {html.escape(summary_text)}</div>'
 
     # 1) 제목·메타 (상단)
     st.markdown(f"""
@@ -762,9 +776,8 @@ def article_dialog(row):
         elif not can_gen:
             st.caption("본문이 없어 AI 요약을 만들 수 없습니다. 원문을 확인하세요.")
 
-    # 3) 요약 미리보기 + 본문 + 원문 버튼
+    # 3) 본문 + 원문 버튼
     st.markdown(f"""
-{summary_html}
 <div class="reader-body">{paras_html}</div>
 <div style="margin:.9rem 0;"><a class="open-btn" href="{link_esc}" target="_blank" rel="noopener">원문 기사 열기</a></div>
 """, unsafe_allow_html=True)

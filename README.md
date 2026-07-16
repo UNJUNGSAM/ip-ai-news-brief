@@ -39,9 +39,13 @@ streamlit run app.py
    GITHUB_TOKEN = "repo, workflow 권한이 있는 토큰"
    GITHUB_REPO = "UNJUNGSAM/ip-ai-news-brief"
    ADMIN_PIN = "관리자 암호 (키워드 설정·지금 수집 보호용, 예: 4823)"
-   GEMINI_API_KEY = "AI 요약·브리핑용 Google AI Studio 키 (선택)"
+   GEMINI_API_KEY = "AI 요약·브리핑용 Gemini API 키"
+   # 모델(선택) — 미지정 시 아래 기본값. 실제 존재하는 정확한 모델 ID를 넣으세요.
+   GEMINI_SUMMARY_MODEL = "gemini-3.1-flash-lite"   # 기사 요약(빠름, 사고수준 low)
+   GEMINI_BRIEF_MODEL = "gemini-3.5-flash"          # 트렌드 브리핑(사고수준 low)
    ```
    - `ADMIN_PIN`을 비워두면 관리 기능도 누구나 쓸 수 있습니다(신뢰 팀이면 생략 가능).
+   - AI 요약/브리핑은 사고수준(thinking) low로 호출하며, 지원하지 않는 모델이면 자동으로 빼고 재시도합니다.
 
 3. 갤럭시탭/폰 브라우저에서 열고 "홈 화면에 추가" — 로그인 없이 바로 열립니다
 
