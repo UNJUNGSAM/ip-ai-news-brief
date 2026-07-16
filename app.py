@@ -388,6 +388,9 @@ a.scrap-btn.on {{ background: var(--accent); color: #fff; border-color: var(--ac
 
 .section-label {{ font-size:.78rem; font-weight:800; letter-spacing:.2em; color:var(--ink-3); text-transform:uppercase; margin:.3rem 0 .55rem .1rem; }}
 .stTextInput input {{ border-radius: 12px !important; }}
+/* AI 동향 브리핑 카드 안 마크다운 서식 */
+div[data-testid="stContainer"] h3 {{ font-size: 1.05rem; color: var(--ink); margin: .6rem 0 .3rem; font-weight: 800; }}
+div[data-testid="stContainer"] p, div[data-testid="stContainer"] li {{ color: var(--ink-2); line-height: 1.7; }}
 
 @media (max-width: 860px) {{
     div[data-testid="stHorizontalBlock"] {{ flex-wrap: wrap; }}
@@ -656,28 +659,21 @@ def save_ai_summary(aid: str, text: str):
     store_write("ai_summaries.json", data)
 
 
-def gemini_summarize(title: str, body: str) -> str | None:
-    """Gemini로 임원 보고용 3줄 요약 생성 (실패 시 None)"""
+def _gemini_generate(prompt: str, max_tokens: int = 500) -> str | None:
+    """Gemini 텍스트 생성 공통 함수 (실패 시 None)"""
     api_key = get_secret("GEMINI_API_KEY")
-    text = (body or "").strip()
-    if not api_key or len(text) < 40:
+    if not api_key:
         return None
     model = get_secret("GEMINI_MODEL", "gemini-2.0-flash")
-    prompt = (
-        "너는 지식재산·AI 분야 전문 뉴스 요약가다. 다음 기사를 임원 보고용으로 "
-        "핵심만 3줄로 요약해라. 각 줄은 '- '로 시작하고, 사실 위주로 간결하게 쓰되 "
-        "추측이나 사족은 넣지 마라.\n\n"
-        f"[제목] {title}\n[본문] {text[:6000]}"
-    )
     try:
         r = requests.post(
             f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
             params={"key": api_key},
             json={
                 "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"temperature": 0.2, "maxOutputTokens": 500},
+                "generationConfig": {"temperature": 0.2, "maxOutputTokens": max_tokens},
             },
-            timeout=30,
+            timeout=45,
         )
         r.raise_for_status()
         parts = r.json()["candidates"][0]["content"]["parts"]
@@ -685,6 +681,65 @@ def gemini_summarize(title: str, body: str) -> str | None:
         return out or None
     except Exception:
         return None
+
+
+def gemini_summarize(title: str, body: str) -> str | None:
+    """Gemini로 임원 보고용 3줄 요약 생성 (실패 시 None)"""
+    text = (body or "").strip()
+    if len(text) < 40:
+        return None
+    prompt = (
+        "너는 지식재산·AI 분야 전문 뉴스 요약가다. 다음 기사를 임원 보고용으로 "
+        "핵심만 3줄로 요약해라. 각 줄은 '- '로 시작하고, 사실 위주로 간결하게 쓰되 "
+        "추측이나 사족은 넣지 마라.\n\n"
+        f"[제목] {title}\n[본문] {text[:6000]}"
+    )
+    return _gemini_generate(prompt, max_tokens=500)
+
+
+# ── AI 동향 브리핑 (기사 제목 기반) ──────────────────────────────────
+
+def get_ai_brief(key: str) -> str | None:
+    return store_read("ai_briefings.json").get(key)
+
+
+def save_ai_brief(key: str, text: str):
+    data = dict(store_read("ai_briefings.json"))
+    data[key] = text
+    # 최근 30개만 보관 (파일 비대화 방지)
+    if len(data) > 30:
+        for k in list(data.keys())[:-30]:
+            data.pop(k, None)
+    store_write("ai_briefings.json", data)
+
+
+def gemini_brief(period_label: str, titles_by_cat: dict) -> str | None:
+    """수집된 기사 제목들을 분석해 임원 보고용 동향 브리핑 생성"""
+    lines = []
+    total = 0
+    for cat, titles in titles_by_cat.items():
+        if not titles:
+            continue
+        lines.append(f"\n[{cat}] ({len(titles)}건)")
+        for t in titles[:60]:  # 카테고리당 최대 60건
+            lines.append(f"- {t}")
+            total += 1
+    if total < 3:
+        return None
+    corpus = "\n".join(lines)
+    prompt = (
+        "너는 지식재산(특허·상표·디자인)과 AI 분야를 담당하는 동향 분석가다. "
+        f"아래는 '{period_label}' 동안 수집된 뉴스 기사 '제목' 목록이다(카테고리별). "
+        "이 제목들만 근거로, 특허청 산하기관 임원에게 보고할 동향 브리핑을 한국어로 작성해라.\n\n"
+        "다음 형식(마크다운)을 지켜라:\n"
+        "### 핵심 이슈\n여러 기사에서 반복되는 주제를 3~5개로 묶어, 각 항목을 '- **주제** — 설명' 형태로. "
+        "몇 건이 관련되는지 대략 언급.\n"
+        "### 카테고리별 흐름\n카테고리마다 '- 카테고리명: 한두 문장' 으로 특징적 흐름 정리.\n"
+        "### 한 줄 총평\n오늘 동향을 관통하는 핵심을 한 문장으로.\n\n"
+        "규칙: 제목에 없는 사실은 지어내지 말 것. 과장·추측 금지. 간결하게.\n\n"
+        f"[기사 제목 목록]\n{corpus[:12000]}"
+    )
+    return _gemini_generate(prompt, max_tokens=1200)
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -998,6 +1053,43 @@ if sel_src != "전체" and sel_cat != "__scrap__":
 with feed_col:
     if view == "trend" and sel_cat != "__scrap__":
         st.markdown('<div class="section-label">Trend — 누적 수집 데이터</div>', unsafe_allow_html=True)
+
+        # ── AI 동향 브리핑 (기사 제목 기반) ──────────────────
+        st.markdown("##### AI 동향 브리핑")
+        PERIODS = {"오늘": 0, "최근 3일": 2, "최근 7일": 6, "최근 14일": 13, "전체": None}
+        bcol1, bcol2 = st.columns([2, 1])
+        with bcol1:
+            brief_period = st.selectbox("분석 기간", list(PERIODS.keys()), index=2,
+                                        label_visibility="collapsed")
+        # 선택 기간의 기사 추출
+        days = PERIODS[brief_period]
+        bdf = df if days is None else df[df["date_dt"].dt.date >= today - timedelta(days=days)]
+        titles_by_cat = {c: bdf[bdf["category"] == c]["title"].tolist() for c in ALL_CATEGORIES}
+        brief_key = f"{brief_period}|{today}|{len(bdf)}"
+
+        if not ai_enabled():
+            st.caption("AI 동향 브리핑은 관리자가 Secrets에 GEMINI_API_KEY를 등록하면 사용할 수 있습니다.")
+        elif not current_user:
+            st.caption("AI 동향 브리핑은 로그인 후 사용할 수 있습니다.")
+        else:
+            cached_brief = get_ai_brief(brief_key)
+            with bcol2:
+                label = "다시 생성" if cached_brief else "브리핑 생성"
+                gen = st.button(label, width="stretch", key="brief_btn")
+            if gen:
+                with st.spinner(f"AI가 '{brief_period}' 기사 {len(bdf)}건을 분석하는 중..."):
+                    out = gemini_brief(brief_period, titles_by_cat)
+                if out:
+                    save_ai_brief(brief_key, out)
+                    cached_brief = out
+                else:
+                    st.warning("브리핑을 생성하지 못했습니다. (기사가 적거나 API 오류)")
+            if cached_brief:
+                with st.container(border=True):
+                    st.markdown(cached_brief)
+                st.caption(f"'{brief_period}' 기준 · 기사 {len(bdf)}건 분석 · 제목 기반")
+
+        st.divider()
         st.markdown("##### 일자별 수집 기사 (최근 14일)")
         t = df[df["date_dt"].dt.date >= today - timedelta(days=13)]
         daily = t.groupby([t["date_dt"].dt.strftime("%m/%d"), "category"]).size().reset_index(name="count")
