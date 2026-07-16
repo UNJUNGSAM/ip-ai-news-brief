@@ -5,8 +5,8 @@
 ════════════════════════════════════════════════════════════════════
  조간신문 스타일 피드 + 기사 팝업 + 로그인/스크랩 + 엑셀·PDF 내보내기
  - 내비게이션·카드는 순수 HTML 링크(쿼리 파라미터) 기반
- - 로그인: 사번(ALLOWED_USERS) + 쿠키(nb_auth) 기반 자동 로그인
-   (쓰기=components.html JS, 읽기=st.context.cookies)
+ - 로그인 없음: 보기·스크랩(팀 공용)·내보내기·AI는 누구나
+ - 관리(키워드 설정·지금 수집)만 Secrets의 ADMIN_PIN으로 보호
  - 계정·스크랩 데이터: GitHub 저장소 store 브랜치(users.json/scraps.json)
    → main 브랜치가 아니므로 저장해도 앱이 재배포되지 않음
  실행: streamlit run app.py
@@ -15,20 +15,18 @@
 
 import base64
 import hashlib
-import hmac
 import html
 import io
 import json
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import quote, unquote
+from urllib.parse import quote
 
 import altair as alt
 import pandas as pd
 import requests
 import streamlit as st
-from streamlit.components.v1 import html as components_html
 
 # 회사 PC 등 SSL 검사(사내 보안 프로그램) 환경 대응 — 클라우드에서는 무해
 try:
@@ -81,7 +79,6 @@ def get_secret(name: str, default: str = "") -> str:
 
 
 GH_REPO = get_secret("GITHUB_REPO", "UNJUNGSAM/ip-ai-news-brief")
-AUTH_SECRET = get_secret("AUTH_SECRET", "ipai-news-brief-2026")
 
 
 def gh_token() -> str:
@@ -147,81 +144,22 @@ def store_write(path: str, obj: dict) -> bool:
     return ok
 
 
-# ── 로그인(쿠키) ────────────────────────────────────────────────────
-# 회원가입 없음: Secrets의 ALLOWED_USERS(사번 목록)에 있는 사번만 로그인 가능
-# 아이디 = 사번, 비밀번호 = 사번
-
-def allowed_users() -> list[str]:
-    raw = get_secret("ALLOWED_USERS", "")
-    return [u.strip() for u in re.split(r"[,;\s]+", raw) if u.strip()]
+# ── 관리자 잠금 (로그인 없음) ───────────────────────────────────────
+# 보기·스크랩·내보내기·AI는 로그인 없이 누구나. 키워드 설정·지금 수집만
+# Secrets의 ADMIN_PIN 으로 보호(한 세션에 한 번만 입력). PIN 미설정 시 개방.
+SCRAP_KEY = "_team"  # 팀 공용 스크랩 저장 키
 
 
-def make_token(uid: str) -> str:
-    sig = hmac.new(AUTH_SECRET.encode(), uid.encode(), hashlib.sha256).hexdigest()[:24]
-    return f"{quote(uid)}:{sig}"
+def admin_pin() -> str:
+    return get_secret("ADMIN_PIN", "")
 
 
-def verify_token(token: str) -> str | None:
-    try:
-        enc_uid, sig = token.rsplit(":", 1)
-        uid = unquote(enc_uid)
-        good = hmac.new(AUTH_SECRET.encode(), uid.encode(), hashlib.sha256).hexdigest()[:24]
-        return uid if hmac.compare_digest(sig, good) else None
-    except Exception:
-        return None
+def is_admin() -> bool:
+    """PIN이 설정돼 있지 않으면 개방, 설정돼 있으면 세션에서 인증된 경우만"""
+    if not admin_pin():
+        return True
+    return bool(st.session_state.get("admin_ok"))
 
-
-# 자동 로그인용 브라우저 쿠키 (닫아도 1년간 유지)
-# — 쓰기: components.html 안의 순수 JS(document.cookie), 읽기: st.context.cookies
-COOKIE_NAME = "nb_auth"
-
-
-def write_cookie_html(token: str, max_age: int = 31536000):
-    """브라우저에 로그인 토큰 쿠키를 저장(또는 max_age=0으로 삭제).
-    이 함수는 st.rerun() 직전이 아니라 메인 흐름에서 렌더되어야 실제로 실행된다."""
-    components_html(f"""<script>
-    var c = "{COOKIE_NAME}={token}; path=/; max-age={max_age}; SameSite=Lax";
-    try {{ document.cookie = c; }} catch(e) {{}}
-    try {{ parent.document.cookie = c; }} catch(e) {{}}
-    </script>""", height=0)
-
-
-def get_cookie_user() -> str | None:
-    try:
-        token = st.context.cookies.get(COOKIE_NAME, "")
-    except Exception:
-        token = ""
-    return verify_token(token) if token else None
-
-
-def get_auth_qp() -> str:
-    """주소에 붙은 유효한 로그인 토큰 (구버전 북마크 호환용)"""
-    try:
-        t = st.query_params.get("auth", "")
-        if t and verify_token(t):
-            return t
-    except Exception:
-        pass
-    return ""
-
-
-def get_current_user() -> str | None:
-    # 1) 이 세션에서 로그인/로그아웃한 상태가 최우선 (""=명시적 로그아웃)
-    if "auth_user" in st.session_state:
-        uid = st.session_state.auth_user
-        return uid if (uid and uid in allowed_users()) else None
-    # 2) 브라우저 쿠키의 토큰 → 3) 주소의 토큰(구버전 호환)
-    uid = get_cookie_user()
-    if not uid:
-        t = get_auth_qp()
-        uid = verify_token(t) if t else None
-    # 목록에서 제외된 사번은 자동으로 접근 차단
-    if uid and uid in allowed_users():
-        return uid
-    return None
-
-
-current_user = get_current_user()
 
 # ── 구독 키워드 설정 ───────────────────────────────────────────────
 
@@ -458,13 +396,14 @@ def load_scraps() -> dict:
     return store_read("scraps.json")
 
 
-def user_scrap_list(uid: str) -> list[dict]:
-    return load_scraps().get(uid, [])
+def team_scrap_list() -> list[dict]:
+    return load_scraps().get(SCRAP_KEY, [])
 
 
-def toggle_scrap(uid: str, row) -> bool:
+def toggle_scrap(row) -> bool:
+    """팀 공용 스크랩 토글 (로그인 불필요)"""
     scraps = dict(load_scraps())
-    lst = list(scraps.get(uid, []))
+    lst = list(scraps.get(SCRAP_KEY, []))
     ids = {x.get("id") for x in lst}
     if row["id"] in ids:
         lst = [x for x in lst if x.get("id") != row["id"]]
@@ -476,7 +415,7 @@ def toggle_scrap(uid: str, row) -> bool:
             "keywords": list(row["keywords"]),
             "scrapped_at": datetime.now(KST).strftime("%Y-%m-%d %H:%M"),
         })
-    scraps[uid] = lst
+    scraps[SCRAP_KEY] = lst
     return store_write("scraps.json", scraps)
 
 
@@ -500,40 +439,29 @@ for k in ("sel", "scrap"):
         except Exception:
             pass
 
-need_login_msg = ""
 if scrap_id:
-    if not current_user:
-        need_login_msg = "스크랩 기능은 로그인 후 사용할 수 있습니다."
+    hit = df[df["id"] == scrap_id]
+    if not hit.empty:
+        if not toggle_scrap(hit.iloc[0]):
+            st.toast("스크랩 저장에 실패했습니다. 관리자 설정(GITHUB_TOKEN)을 확인하세요.")
     else:
-        hit = df[df["id"] == scrap_id]
-        if not hit.empty:
-            if not toggle_scrap(current_user, hit.iloc[0]):
-                st.toast("스크랩 저장에 실패했습니다. 관리자 설정(GITHUB_TOKEN)을 확인하세요.")
-        else:
-            # 수집 데이터에서 사라진 옛 기사는 스크랩 목록에서 바로 제거
-            scraps_all = dict(load_scraps())
-            lst = [x for x in scraps_all.get(current_user, []) if x.get("id") != scrap_id]
-            scraps_all[current_user] = lst
-            store_write("scraps.json", scraps_all)
+        # 수집 데이터에서 사라진 옛 기사는 스크랩 목록에서 바로 제거
+        scraps_all = dict(load_scraps())
+        lst = [x for x in scraps_all.get(SCRAP_KEY, []) if x.get("id") != scrap_id]
+        scraps_all[SCRAP_KEY] = lst
+        store_write("scraps.json", scraps_all)
 
-scrap_items = user_scrap_list(current_user) if current_user else []
+scrap_items = team_scrap_list()
 scrap_ids = {x.get("id") for x in scrap_items}
-
-
-# 로그인 상태면(쿠키/URL 무엇으로 로그인했든) 모든 링크에 토큰을 실어
-# 페이지 이동 시에도 로그인이 유지되도록 한다. (쿠키가 막힌 기기 대비)
-AUTH_QP = get_auth_qp() or (make_token(current_user) if current_user else "")
 
 
 def make_url(**over) -> str:
     params = {"view": view, "cat": sel_cat, "src": sel_src}
-    if AUTH_QP:
-        params["auth"] = AUTH_QP  # 링크 이동 시에도 로그인 유지
     params.update(over)
     parts = []
     for k, v in params.items():
         v = str(v)
-        if k not in ("view", "auth") and (not v or v == "전체"):
+        if k != "view" and (not v or v == "전체"):
             continue
         parts.append(f"{k}={quote(v)}")
     return "?" + "&".join(parts)
@@ -796,7 +724,7 @@ def article_dialog(row):
                 f'{html.escape(cached).replace(chr(10), "<br>")}</div>',
                 unsafe_allow_html=True,
             )
-        elif current_user:
+        else:
             if body_text or summary_text:
                 if st.button("AI 3줄 요약 생성", key="dlg_ai"):
                     with st.spinner("AI가 기사를 요약하는 중..."):
@@ -812,40 +740,24 @@ def article_dialog(row):
                         st.warning("요약을 생성하지 못했습니다. (본문이 짧거나 API 오류)")
             else:
                 st.caption("본문이 없어 AI 요약을 만들 수 없습니다. 원문을 확인하세요.")
-        else:
-            st.caption("AI 요약은 로그인 후 사용할 수 있습니다.")
 
     st.divider()
-    if current_user:
-        on = row["id"] in scrap_ids
-        if st.button("스크랩 해제" if on else "이 기사 스크랩", key="dlg_scrap"):
-            toggle_scrap(current_user, row)
-            st.rerun()
-    else:
-        st.caption("스크랩하려면 로그인이 필요합니다.")
+    on = row["id"] in scrap_ids
+    if st.button("팀 스크랩에서 빼기" if on else "팀 스크랩에 담기", key="dlg_scrap"):
+        toggle_scrap(row)
+        st.rerun()
 
 
-@st.dialog("로그인")
-def login_dialog(msg: str = ""):
-    if msg:
-        st.info(msg)
-    if not allowed_users():
-        st.warning("관리자가 Streamlit Secrets에 ALLOWED_USERS(사번 목록)를 등록해야 로그인할 수 있습니다.")
-    uid = st.text_input("사번", key="li_id")
-    pw = st.text_input("비밀번호", type="password", key="li_pw",
-                       help="비밀번호는 본인 사번과 동일합니다.")
-    if st.button("로그인", type="primary", width="stretch", key="li_btn"):
-        u = uid.strip()
-        if u and u in allowed_users() and pw.strip() == u:
-            tok = make_token(u)
-            st.session_state.auth_user = u
-            # 이중 안전장치: ① 쿠키 저장(다음 실행에서) ② 주소에 토큰 유지
-            #  — 기기·브라우저에 따라 쿠키가 막혀도 주소 토큰으로 로그인 유지
-            st.session_state._pending_cookie = tok
-            st.query_params["auth"] = tok
+@st.dialog("관리자 확인")
+def admin_dialog():
+    st.caption("이 기능은 관리자 암호가 필요합니다.")
+    pin = st.text_input("관리자 암호", type="password", key="pin_admin")
+    if st.button("확인", type="primary", key="pin_admin_btn"):
+        if pin == admin_pin():
+            st.session_state.admin_ok = True
             st.rerun()
         else:
-            st.error("사번 또는 비밀번호가 올바르지 않습니다.")
+            st.error("암호가 올바르지 않습니다.")
 
 
 @st.dialog("설정", width="large")
@@ -853,6 +765,20 @@ def settings_dialog():
     fs = st.slider("본문 글자 크기", 13, 24, value=st.session_state.reader_font, key="reader_font_widget")
     st.session_state.reader_font = fs
     st.divider()
+
+    # 관리자 암호(ADMIN_PIN) 잠금 — 설정돼 있고 아직 인증 안됐으면 PIN 요구
+    if not is_admin():
+        st.markdown("##### 🔒 관리자 확인")
+        st.caption("키워드 설정은 관리자 암호가 필요합니다.")
+        pin = st.text_input("관리자 암호", type="password", key="pin_settings")
+        if st.button("확인", type="primary", key="pin_settings_btn"):
+            if pin == admin_pin():
+                st.session_state.admin_ok = True
+                st.rerun()
+            else:
+                st.error("암호가 올바르지 않습니다.")
+        return
+
     st.markdown("##### 구독 키워드")
     if gh_token():
         st.caption("영구 저장 사용 가능 — 저장하면 모든 사용자에게 적용되고, 다음 수집부터 반영됩니다.")
@@ -915,16 +841,16 @@ def export_dialog(filtered_df: pd.DataFrame, list_label: str):
             width="stretch",
         )
     with c3:
-        if current_user and scrap_items:
+        if scrap_items:
             st.download_button(
-                f"내 스크랩 ({len(scrap_items)}건)",
+                f"팀 스크랩 ({len(scrap_items)}건)",
                 data=to_excel_bytes(items_to_frame(scrap_items)),
                 file_name=f"IPAI뉴스_스크랩_{stamp}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 width="stretch",
             )
         else:
-            st.button("내 스크랩 (없음)", disabled=True, width="stretch")
+            st.button("팀 스크랩 (없음)", disabled=True, width="stretch")
 
     st.markdown("##### PDF")
     p1, p2 = st.columns(2)
@@ -937,16 +863,16 @@ def export_dialog(filtered_df: pd.DataFrame, list_label: str):
                 width="stretch",
             )
     with p2:
-        if current_user and scrap_items:
-            pdf_scrap = to_pdf_bytes(scrap_items, "내 스크랩")
+        if scrap_items:
+            pdf_scrap = to_pdf_bytes(scrap_items, "팀 스크랩")
             if pdf_scrap:
                 st.download_button(
-                    f"내 스크랩 PDF ({len(scrap_items)}건)", data=pdf_scrap,
+                    f"팀 스크랩 PDF ({len(scrap_items)}건)", data=pdf_scrap,
                     file_name=f"IPAI뉴스_스크랩_{stamp}.pdf", mime="application/pdf",
                     width="stretch",
                 )
         else:
-            st.button("내 스크랩 PDF (없음)", disabled=True, width="stretch")
+            st.button("팀 스크랩 PDF (없음)", disabled=True, width="stretch")
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -963,18 +889,6 @@ st.markdown(f"""
 </div>
 <div class="masthead-rule"></div>
 """, unsafe_allow_html=True)
-
-# 예약된 쿠키 쓰기/삭제 실행 (로그인 시 토큰 저장, 로그아웃 시 삭제)
-# — 메인 흐름에서 렌더되므로 JS가 실제로 실행되어 브라우저에 반영됨
-if "_pending_cookie" in st.session_state:
-    tok = st.session_state.pop("_pending_cookie")
-    if tok:
-        write_cookie_html(tok)               # 로그인 토큰 저장(1년)
-    else:
-        write_cookie_html("", max_age=0)     # 로그아웃 — 쿠키 삭제
-elif current_user and get_cookie_user() != current_user:
-    # URL 토큰으로 로그인된 상태인데 쿠키가 없으면 쿠키 복구(다음 접속 자동로그인)
-    write_cookie_html(make_token(current_user))
 
 if df.empty:
     st.info("아직 수집된 뉴스가 없습니다. `python data_pipeline.py`를 실행하세요.")
@@ -1004,9 +918,9 @@ with rail_col:
             f'<span><span class="dot" style="background:{dot}"></span>{html.escape(c)}</span>'
             f'<span class="n">{counts.get(c, 0)}</span></a>'
         )
-    if current_user:
-        on = " on" if sel_cat == "__scrap__" else ""
-        nav.append(f'<a class="{on}" href="{make_url(cat="__scrap__")}" target="_self">내 스크랩 <span class="n">{len(scrap_items)}</span></a>')
+    # 팀 공용 스크랩 (로그인 없이 누구나)
+    on = " on" if sel_cat == "__scrap__" else ""
+    nav.append(f'<a class="{on}" href="{make_url(cat="__scrap__")}" target="_self">팀 스크랩 <span class="n">{len(scrap_items)}</span></a>')
     top_srcs = df_v["source"].value_counts().head(10)
     if len(top_srcs) > 1:
         nav.append('<div class="sec">소스</div>')
@@ -1019,32 +933,21 @@ with rail_col:
     st.markdown("".join(nav), unsafe_allow_html=True)
     st.write("")
 
-    if current_user:
-        st.markdown(f'<div class="user-line">{html.escape(current_user)} 님</div>', unsafe_allow_html=True)
-        if st.button("키워드 설정", width="stretch"):
-            settings_dialog()
-        if st.button("내보내기", width="stretch"):
-            st.session_state._open_export = True
-        if st.button("지금 수집", width="stretch"):
+    # 내보내기: 누구나
+    if st.button("내보내기", width="stretch"):
+        st.session_state._open_export = True
+    # 관리(키워드 설정·지금 수집): ADMIN_PIN으로 보호
+    if st.button("키워드 설정", width="stretch"):
+        settings_dialog()
+    if st.button("지금 수집", width="stretch"):
+        if is_admin():
             ok, msg = trigger_collect()
             (st.success if ok else st.error)(msg)
-        if st.button("로그아웃", width="stretch"):
-            st.session_state.auth_user = ""
-            st.session_state._pending_cookie = ""  # 다음 실행에서 쿠키 삭제
-            try:
-                del st.query_params["auth"]
-            except Exception:
-                pass
-            st.rerun()
-    else:
-        if st.button("로그인", type="primary", width="stretch"):
-            need_login_msg = need_login_msg or " "
-        if st.button("내보내기", width="stretch"):
-            st.session_state._open_export = True
-        st.caption("사번으로 로그인하면 스크랩·키워드 설정·즉시 수집을 사용할 수 있습니다.")
+        else:
+            st.session_state._open_admin = True
 
 # ── 필터 적용 ──────────────────────────────────────────
-if sel_cat == "__scrap__" and current_user:
+if sel_cat == "__scrap__":
     sc = items_to_frame(scrap_items)
     if not sc.empty:
         sc["id"] = sc["id"] if "id" in sc.columns else ""
@@ -1055,7 +958,7 @@ if sel_cat == "__scrap__" and current_user:
         filtered = sc
     else:
         filtered = df.head(0)
-    list_label = "내스크랩"
+    list_label = "팀스크랩"
 elif sel_cat != "전체" and sel_cat != "__scrap__":
     filtered = df_v[df_v["category"] == sel_cat]
     list_label = sel_cat
@@ -1084,8 +987,6 @@ with feed_col:
 
         if not ai_enabled():
             st.caption("AI 동향 브리핑은 관리자가 Secrets에 GEMINI_API_KEY를 등록하면 사용할 수 있습니다.")
-        elif not current_user:
-            st.caption("AI 동향 브리핑은 로그인 후 사용할 수 있습니다.")
         else:
             cached_brief = get_ai_brief(brief_key)
             with bcol2:
@@ -1165,12 +1066,13 @@ with feed_col:
             ]
 
         n = len(filtered)
-        head_txt = "내 스크랩" if sel_cat == "__scrap__" else f"기사 {n}건 · 카드를 누르면 본문이 열립니다"
         if sel_cat == "__scrap__":
-            head_txt = f"내 스크랩 {n}건"
+            head_txt = f"팀 스크랩 {n}건"
+        else:
+            head_txt = f"기사 {n}건 · 카드를 누르면 본문이 열립니다"
         st.markdown(f'<div class="section-label">{head_txt}</div>', unsafe_allow_html=True)
         if n == 0:
-            st.warning("표시할 기사가 없습니다." if sel_cat == "__scrap__" else "조건에 맞는 기사가 없습니다.")
+            st.warning("스크랩한 기사가 없습니다." if sel_cat == "__scrap__" else "조건에 맞는 기사가 없습니다.")
 
         MAX_SHOW = 80
         cards = ['<div class="feed">']
@@ -1213,5 +1115,5 @@ if sel_id:
         article_dialog(hit.iloc[0])
 elif st.session_state.pop("_open_export", False):
     export_dialog(filtered if isinstance(filtered, pd.DataFrame) else df, str(list_label))
-elif need_login_msg:
-    login_dialog(need_login_msg.strip())
+elif st.session_state.pop("_open_admin", False):
+    admin_dialog()
