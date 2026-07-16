@@ -272,6 +272,9 @@ st.markdown(f"""
     }}
 }}
 
+/* 페이지 이동(카테고리·기간 전환) 시 흰 화면 대신 부드러운 크로스페이드 (지원 브라우저) */
+@view-transition {{ navigation: auto; }}
+
 .stApp {{ background: var(--page-bg); }}
 html, body, [class*="css"] {{ font-family: var(--font-body); }}
 #MainMenu, footer {{ visibility: hidden; }}
@@ -302,9 +305,8 @@ a.stat-tile:hover {{ transform: translateY(-2px); }}
 .stat-tile .label {{ font-size: .75rem; color: var(--ink-3); font-weight: 600; }}
 .stat-tile .value {{ font-family: var(--font-display); font-size: 1.55rem; font-weight: 700; color: var(--ink); }}
 
-.feed .news-card {{ position: relative; background: var(--card-bg); border-radius: 15px; box-shadow: var(--card-shadow); margin-bottom: .65rem; border: 1px solid transparent; transition: border-color .12s; }}
-.feed .news-card:hover {{ border-color: var(--accent); }}
-.feed a.card-main {{ display: block; padding: 1rem 1.25rem .9rem; text-decoration: none; }}
+.news-card {{ background: var(--card-bg); border-radius: 15px; box-shadow: var(--card-shadow);
+    padding: 1rem 1.25rem .9rem; border: 1px solid transparent; transition: border-color .12s; }}
 .news-meta {{ font-size: .78rem; color: var(--ink-3); margin-bottom: .25rem; display: flex; align-items: center; gap: .45rem; flex-wrap: wrap; padding-right: 4.5rem; }}
 .cat-kicker {{ font-weight: 800; letter-spacing: .05em; font-size: .77rem; }}
 .news-title {{ font-family: var(--font-display); font-weight: 700; font-size: 1.08rem; color: var(--ink); line-height: 1.42; word-break: keep-all; }}
@@ -313,9 +315,27 @@ a.stat-tile:hover {{ transform: translateY(-2px); }}
     max-height: calc(.84rem * 1.5 * 2); }}
 .tag-row {{ display: flex; gap: .3rem; flex-wrap: wrap; margin-top: .5rem; }}
 .tag-pill {{ background: var(--pill-bg); color: var(--pill-ink); border-radius: 999px; padding: .14rem .6rem; font-size: .72rem; font-weight: 600; }}
-a.scrap-btn {{ position: absolute; top: .85rem; right: .9rem; z-index: 2; font-size: .72rem; font-weight: 700; padding: .2rem .6rem; border-radius: 999px; text-decoration: none; color: var(--ink-3); border: 1px solid var(--hair); background: var(--card-bg); }}
-a.scrap-btn:hover {{ color: var(--accent); border-color: var(--accent); }}
-a.scrap-btn.on {{ background: var(--accent); color: #fff; border-color: var(--accent); }}
+/* ── 기사 카드 컨테이너: 클릭은 투명 버튼(새로고침 없음)이 처리 ── */
+div[class*="st-key-card_"] {{ position: relative; margin-bottom: .65rem; gap: 0 !important; }}
+div[class*="st-key-card_"]:hover .news-card {{ border-color: var(--accent); }}
+/* 카드 전체를 덮는 투명 '기사 열기' 버튼 */
+div[class*="st-key-open_"] {{ position: absolute; inset: 0; z-index: 1; }}
+div[class*="st-key-open_"] button {{
+    width: 100% !important; height: 100% !important; opacity: 0 !important;
+    cursor: pointer; border: none !important; padding: 0 !important; min-height: 0 !important;
+}}
+/* 우상단 스크랩 알약 버튼 (오버레이 위) */
+div[class*="st-key-scrap_"] {{ position: absolute; top: .7rem; right: .8rem; z-index: 2; width: auto !important; }}
+div[class*="st-key-scrap_"] button {{
+    font-size: .72rem !important; font-weight: 700 !important;
+    padding: .12rem .6rem !important; min-height: 0 !important;
+    border-radius: 999px !important; border: 1px solid var(--hair) !important;
+    background: var(--card-bg) !important; color: var(--ink-3) !important;
+}}
+div[class*="st-key-scrap_"] button:hover {{ color: var(--accent) !important; border-color: var(--accent) !important; }}
+div[class*="st-key-scrap_"] button[kind="primary"] {{
+    background: var(--accent) !important; color: #fff !important; border-color: var(--accent) !important;
+}}
 
 .reader-meta {{ display:flex; align-items:center; gap:.5rem; font-size:.82rem; color:var(--ink-3); margin-bottom:.5rem; flex-wrap:wrap; }}
 .reader-chip {{ font-weight:800; font-size:.76rem; padding:.14rem .6rem; border-radius:999px; color:#fff; }}
@@ -1134,31 +1154,36 @@ with feed_col:
         if n == 0:
             st.warning("스크랩한 기사가 없습니다." if sel_cat == "__scrap__" else "조건에 맞는 기사가 없습니다.")
 
+        # 카드 클릭 = 페이지 새로고침 없이(websocket) 팝업 열기
+        #  · 카드 겉모습은 HTML, 클릭은 카드 전체를 덮는 투명 st.button이 받음
+        #  · 스크랩도 st.button → 새로고침 없이 즉시 토글
         MAX_SHOW = 80
-        cards = ['<div class="feed">']
         for _, r in filtered.head(MAX_SHOW).iterrows():
             cat_cls = CAT_CSS_CLASS.get(r["category"], "")
             tags = "".join(f'<span class="tag-pill">#{html.escape(k)}</span>' for k in (r["keywords"] or [])[:5])
             tags_html = f'<div class="tag-row">{tags}</div>' if tags else ""
             scrapped = r["id"] in scrap_ids
-            scrap_cls = " on" if scrapped else ""
-            scrap_txt = "스크랩됨" if scrapped else "스크랩"
-            # 제목 밑 3줄 요약(작은 글씨) — 클릭 없이도 내용을 파악
+            # 제목 밑 요약(작은 글씨, 2줄) — 클릭 없이도 내용을 파악
             summ = r["summary"] if r["summary"] != r["title"] else ""
             if len(summ) > 160:
                 summ = summ[:160].rstrip() + "…"
             summ_html = f'<div class="card-summary">{html.escape(summ)}</div>' if summ else ""
-            cards.append(
+            card_html = (
                 f'<div class="news-card">'
-                f'<a class="scrap-btn{scrap_cls}" href="{make_url(scrap=r["id"])}" target="_self">{scrap_txt}</a>'
-                f'<a class="card-main" href="{make_url(sel=r["id"])}" target="_self">'
                 f'<div class="news-meta"><span class="cat-kicker {cat_cls}">{html.escape(r["category"])}</span>'
                 f'<span>·</span><span>{html.escape(str(r["source"]))}</span><span>·</span><span>{human_date(r["date_dt"])}</span></div>'
                 f'<div class="news-title">{html.escape(r["title"])}</div>'
-                f'{summ_html}{tags_html}</a></div>'
+                f'{summ_html}{tags_html}</div>'
             )
-        cards.append("</div>")
-        st.markdown("".join(cards), unsafe_allow_html=True)
+            with st.container(key=f"card_{r['id']}"):
+                st.markdown(card_html, unsafe_allow_html=True)
+                if st.button("기사 열기", key=f"open_{r['id']}"):
+                    st.session_state._open_article = r["id"]
+                if st.button("스크랩됨" if scrapped else "스크랩",
+                             key=f"scrap_{r['id']}",
+                             type="primary" if scrapped else "secondary"):
+                    toggle_scrap(r)
+                    st.rerun()
         if n > MAX_SHOW:
             st.caption(f"상위 {MAX_SHOW}건 표시 중 (전체 {n}건) — 검색·필터로 좁혀 보세요.")
 
@@ -1169,13 +1194,15 @@ with feed_col:
     )
 
 # ── 다이얼로그 열기 (한 실행에 하나만) ─────────────────
-if sel_id:
-    hit = df[df["id"] == sel_id]
+# 카드의 투명 버튼 클릭(_open_article, 새로고침 없음) 또는 URL의 sel(딥링크)
+target_id = st.session_state.pop("_open_article", None) or sel_id
+if target_id:
+    hit = df[df["id"] == target_id]
     if hit.empty and scrap_items:
         sc = items_to_frame(scrap_items)
         sc["date_dt"] = pd.to_datetime(sc["date"], errors="coerce")
         sc["content"] = sc.get("content", "")
-        hit = sc[sc["id"] == sel_id]
+        hit = sc[sc["id"] == target_id]
     if not hit.empty:
         article_dialog(hit.iloc[0])
 elif st.session_state.pop("_open_export", False):
