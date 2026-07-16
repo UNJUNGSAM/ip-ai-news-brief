@@ -551,10 +551,17 @@ def is_broken_link(link: str) -> bool:
     return False
 
 
-def display_link(link: str, title: str) -> str:
-    """깨진 링크는 항상 열리는 구글뉴스 검색 링크로 대체 (제목으로 원문 찾기)"""
+def fallback_search(title: str, source: str = "") -> str:
+    """원문을 못 찾은 기사용 검색 링크 — 제목+언론사로 일반 구글 검색
+    (제목만으로는 안 뜨는 경우가 많아 언론사명을 함께 넣어 정확도를 높임)"""
+    q = f'"{title}" {source}'.strip()
+    return f"https://www.google.com/search?q={quote(q)}"
+
+
+def display_link(link: str, title: str, source: str = "") -> str:
+    """깨진 링크는 제목+언론사 구글 검색으로 대체 (항상 열리고 원문을 잘 찾음)"""
     if is_broken_link(link):
-        return f"https://news.google.com/search?q={quote(str(title))}&hl=ko&gl=KR&ceid=KR:ko"
+        return fallback_search(title, source)
     return str(link)
 
 
@@ -587,7 +594,7 @@ def items_to_frame(items: list[dict]) -> pd.DataFrame:
 def to_excel_bytes(frame: pd.DataFrame) -> bytes:
     x = frame.copy()
     x["keywords"] = x["keywords"].map(lambda ks: ", ".join(ks) if isinstance(ks, list) else str(ks))
-    x["link"] = [display_link(l, t) for l, t in zip(x["link"], x["title"])]
+    x["link"] = [display_link(l, t, s) for l, t, s in zip(x["link"], x["title"], x.get("source", [""] * len(x)))]
     x = x[list(EXPORT_COLS)].rename(columns=EXPORT_COLS)
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as w:
@@ -630,7 +637,7 @@ def to_pdf_bytes(items: list[dict], subtitle: str) -> bytes | None:
                 pdf.set_font("Nanum", size=9.5)
                 pdf.set_text_color(85, 93, 104)
                 pdf.multi_cell(0, 5.5, summ[:400], new_x="LMARGIN", new_y="NEXT")
-            link = display_link(a.get("link", ""), a.get("title", ""))
+            link = display_link(a.get("link", ""), a.get("title", ""), a.get("source", ""))
             if link:
                 pdf.set_font("Nanum", size=7.5)
                 pdf.set_text_color(11, 87, 208)
@@ -750,7 +757,7 @@ def gemini_brief(period_label: str, titles_by_cat: dict) -> str | None:
 def article_dialog(row):
     color = CAT_CHART.get(row["category"], "#666")
     title_esc = html.escape(row["title"])
-    link_esc = html.escape(display_link(row["link"], row["title"]), quote=True)
+    link_esc = html.escape(display_link(row["link"], row["title"], str(row.get("source", ""))), quote=True)
     date_str = row["date_dt"].strftime("%Y.%m.%d")
 
     body_text = row["content"] or ""
@@ -828,9 +835,12 @@ def login_dialog(msg: str = ""):
     if st.button("로그인", type="primary", width="stretch", key="li_btn"):
         u = uid.strip()
         if u and u in allowed_users() and pw.strip() == u:
+            tok = make_token(u)
             st.session_state.auth_user = u
-            # 다음 실행(메인 흐름)에서 쿠키를 저장하도록 예약 → 자동 로그인
-            st.session_state._pending_cookie = make_token(u)
+            # 이중 안전장치: ① 쿠키 저장(다음 실행에서) ② 주소에 토큰 유지
+            #  — 기기·브라우저에 따라 쿠키가 막혀도 주소 토큰으로 로그인 유지
+            st.session_state._pending_cookie = tok
+            st.query_params["auth"] = tok
             st.rerun()
         else:
             st.error("사번 또는 비밀번호가 올바르지 않습니다.")
@@ -960,6 +970,9 @@ if "_pending_cookie" in st.session_state:
         write_cookie_html(tok)               # 로그인 토큰 저장(1년)
     else:
         write_cookie_html("", max_age=0)     # 로그아웃 — 쿠키 삭제
+elif current_user and get_cookie_user() != current_user:
+    # URL 토큰으로 로그인된 상태인데 쿠키가 없으면 쿠키 복구(다음 접속 자동로그인)
+    write_cookie_html(make_token(current_user))
 
 if df.empty:
     st.info("아직 수집된 뉴스가 없습니다. `python data_pipeline.py`를 실행하세요.")

@@ -486,8 +486,9 @@ def collect_google_news(subscriptions: list[dict], known_links: set, known_title
                     continue
 
                 # 원문 복원에 성공했고 깨지지 않은 링크만 사용,
-                # 그 외에는 항상 열리는 구글뉴스 검색 링크로 대체
-                gsearch = f"https://news.google.com/search?q={quote(title)}&hl=ko&gl=KR&ceid=KR:ko"
+                # 그 외에는 제목+언론사 구글 검색으로 대체(제목만으론 잘 안 나옴)
+                search_q = ('"' + title + '" ' + source_name).strip()
+                gsearch = "https://www.google.com/search?q=" + quote(search_q)
                 final_link = real_url if (real_url and not is_broken_link(real_url)) else gsearch
 
                 articles.append({
