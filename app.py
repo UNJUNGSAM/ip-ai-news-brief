@@ -520,7 +520,9 @@ scrap_items = user_scrap_list(current_user) if current_user else []
 scrap_ids = {x.get("id") for x in scrap_items}
 
 
-AUTH_QP = get_auth_qp()
+# 로그인 상태면(쿠키/URL 무엇으로 로그인했든) 모든 링크에 토큰을 실어
+# 페이지 이동 시에도 로그인이 유지되도록 한다. (쿠키가 막힌 기기 대비)
+AUTH_QP = get_auth_qp() or (make_token(current_user) if current_user else "")
 
 
 def make_url(**over) -> str:
