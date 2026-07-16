@@ -308,6 +308,8 @@ a.stat-tile:hover {{ transform: translateY(-2px); }}
 .news-meta {{ font-size: .78rem; color: var(--ink-3); margin-bottom: .25rem; display: flex; align-items: center; gap: .45rem; flex-wrap: wrap; padding-right: 4.5rem; }}
 .cat-kicker {{ font-weight: 800; letter-spacing: .05em; font-size: .77rem; }}
 .news-title {{ font-family: var(--font-display); font-weight: 700; font-size: 1.08rem; color: var(--ink); line-height: 1.42; word-break: keep-all; }}
+.card-summary {{ margin-top: .4rem; font-size: .84rem; color: var(--ink-3); line-height: 1.55; word-break: keep-all;
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }}
 .tag-row {{ display: flex; gap: .3rem; flex-wrap: wrap; margin-top: .5rem; }}
 .tag-pill {{ background: var(--pill-bg); color: var(--pill-ink); border-radius: 999px; padding: .14rem .6rem; font-size: .72rem; font-weight: 600; }}
 a.scrap-btn {{ position: absolute; top: .85rem; right: .9rem; z-index: 2; font-size: .72rem; font-weight: 700; padding: .2rem .6rem; border-radius: 999px; text-decoration: none; color: var(--ink-3); border: 1px solid var(--hair); background: var(--card-bg); }}
@@ -329,6 +331,19 @@ a.scrap-btn.on {{ background: var(--accent); color: #fff; border-color: var(--ac
 /* AI 동향 브리핑 카드 안 마크다운 서식 */
 div[data-testid="stContainer"] h3 {{ font-size: 1.05rem; color: var(--ink); margin: .6rem 0 .3rem; font-weight: 800; }}
 div[data-testid="stContainer"] p, div[data-testid="stContainer"] li {{ color: var(--ink-2); line-height: 1.7; }}
+/* 기사 팝업 상단 'AI 요약' 버튼 — 테두리가 번쩍이는 강조 버튼 */
+.st-key-dlg_ai button {{
+    border: 2px solid var(--accent) !important; color: var(--accent) !important;
+    font-weight: 800 !important; border-radius: 12px !important;
+    background: var(--accent-soft) !important;
+    animation: aiGlow 1.4s ease-in-out infinite;
+}}
+.st-key-dlg_ai button:hover {{ background: var(--accent) !important; color: #fff !important; }}
+@keyframes aiGlow {{
+    0%   {{ box-shadow: 0 0 0 0 rgba(11,87,208,.45); }}
+    70%  {{ box-shadow: 0 0 0 8px rgba(11,87,208,0); }}
+    100% {{ box-shadow: 0 0 0 0 rgba(11,87,208,0); }}
+}}
 
 @media (max-width: 860px) {{
     div[data-testid="stHorizontalBlock"] {{ flex-wrap: wrap; }}
@@ -716,24 +731,21 @@ def article_dialog(row):
     if summary_text and body_text:
         summary_html = f'<div class="reader-summary"><b>요약</b> — {html.escape(summary_text)}</div>'
 
+    # 1) 제목·메타 (상단)
     st.markdown(f"""
 <div class="reader-meta">
   <span class="reader-chip" style="background:{color}">{html.escape(row['category'])}</span>
   <span>{html.escape(str(row['source']))}</span><span>·</span><span>{date_str}</span>
 </div>
 <div class="reader-title"><a href="{link_esc}" target="_blank" rel="noopener">{title_esc}</a></div>
-{summary_html}
-<div class="reader-body">{paras_html}</div>
-<div style="margin:.9rem 0;"><a class="open-btn" href="{link_esc}" target="_blank" rel="noopener">원문 기사 열기</a></div>
 """, unsafe_allow_html=True)
 
-    # ── AI 3줄 요약 (Gemini) ──────────────────────────────
+    # 2) 본문 맨 위: AI 요약 버튼(번쩍이는 강조) + 결과
     if ai_enabled():
         cached = get_ai_summary(row["id"])
         can_gen = bool(body_text or summary_text)
         if can_gen:
-            # 캐시가 있으면 '다시 생성', 없으면 '생성' — 눌러 재생성 가능(잘린 요약 갱신)
-            if st.button("AI 요약 다시 생성" if cached else "AI 3줄 요약 생성", key="dlg_ai"):
+            if st.button("✦ AI 요약 다시 생성" if cached else "✦ AI 3줄 요약 보기", key="dlg_ai"):
                 with st.spinner("AI가 기사를 요약하는 중..."):
                     out = gemini_summarize(row["title"], body_text or summary_text)
                 if out:
@@ -749,6 +761,13 @@ def article_dialog(row):
             )
         elif not can_gen:
             st.caption("본문이 없어 AI 요약을 만들 수 없습니다. 원문을 확인하세요.")
+
+    # 3) 요약 미리보기 + 본문 + 원문 버튼
+    st.markdown(f"""
+{summary_html}
+<div class="reader-body">{paras_html}</div>
+<div style="margin:.9rem 0;"><a class="open-btn" href="{link_esc}" target="_blank" rel="noopener">원문 기사 열기</a></div>
+""", unsafe_allow_html=True)
 
     st.divider()
     on = row["id"] in scrap_ids
@@ -1092,6 +1111,11 @@ with feed_col:
             scrapped = r["id"] in scrap_ids
             scrap_cls = " on" if scrapped else ""
             scrap_txt = "스크랩됨" if scrapped else "스크랩"
+            # 제목 밑 3줄 요약(작은 글씨) — 클릭 없이도 내용을 파악
+            summ = r["summary"] if r["summary"] != r["title"] else ""
+            if len(summ) > 160:
+                summ = summ[:160].rstrip() + "…"
+            summ_html = f'<div class="card-summary">{html.escape(summ)}</div>' if summ else ""
             cards.append(
                 f'<div class="news-card">'
                 f'<a class="scrap-btn{scrap_cls}" href="{make_url(scrap=r["id"])}" target="_self">{scrap_txt}</a>'
@@ -1099,7 +1123,7 @@ with feed_col:
                 f'<div class="news-meta"><span class="cat-kicker {cat_cls}">{html.escape(r["category"])}</span>'
                 f'<span>·</span><span>{html.escape(str(r["source"]))}</span><span>·</span><span>{human_date(r["date_dt"])}</span></div>'
                 f'<div class="news-title">{html.escape(r["title"])}</div>'
-                f'{tags_html}</a></div>'
+                f'{summ_html}{tags_html}</a></div>'
             )
         cards.append("</div>")
         st.markdown("".join(cards), unsafe_allow_html=True)
