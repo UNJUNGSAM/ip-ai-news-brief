@@ -318,10 +318,20 @@ a.stat-tile:hover {{ transform: translateY(-2px); }}
 /* ── 기사 카드 컨테이너: 클릭은 투명 버튼(새로고침 없음)이 처리 ── */
 div[class*="st-key-card_"] {{ position: relative; margin-bottom: .65rem; gap: 0 !important; }}
 div[class*="st-key-card_"]:hover .news-card {{ border-color: var(--accent); }}
-/* 카드 전체를 덮는 투명 '기사 열기' 버튼 */
-div[class*="st-key-open_"] {{ position: absolute; inset: 0; z-index: 1; }}
+/* 카드 전체를 덮는 투명 '기사 열기' 버튼
+   (Streamlit이 버튼 컨테이너에 자체 width를 강제하므로 100%로 덮어씀) */
+div[class*="st-key-open_"] {{
+    position: absolute !important; inset: 0 !important; z-index: 1;
+    width: 100% !important; height: 100% !important;
+    min-width: 0 !important; max-width: none !important;
+}}
+div[class*="st-key-open_"] > div,
+div[class*="st-key-open_"] [data-testid="stButton"] {{
+    width: 100% !important; height: 100% !important;
+}}
 div[class*="st-key-open_"] button {{
-    width: 100% !important; height: 100% !important; opacity: 0 !important;
+    display: block; width: 100% !important; height: 100% !important;
+    min-width: 0 !important; opacity: 0 !important;
     cursor: pointer; border: none !important; padding: 0 !important; min-height: 0 !important;
 }}
 /* 우상단 스크랩 알약 버튼 (오버레이 위) */
