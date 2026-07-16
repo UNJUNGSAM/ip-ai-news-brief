@@ -596,25 +596,37 @@ def save_ai_summary(aid: str, text: str):
     store_write("ai_summaries.json", data)
 
 
-def _gemini_generate(prompt: str, max_tokens: int = 500) -> str | None:
-    """Gemini 텍스트 생성 공통 함수 (실패 시 None)"""
+def _gemini_generate(prompt: str, max_tokens: int = 1024) -> str | None:
+    """Gemini 텍스트 생성 공통 함수 (실패 시 None).
+    한국어는 토큰 소모가 커서 max_tokens를 넉넉히 준다. 출력이 토큰 한도에
+    걸려 잘리면(finishReason=MAX_TOKENS) 한 번 더 큰 한도로 재시도한다."""
     api_key = get_secret("GEMINI_API_KEY")
     if not api_key:
         return None
     model = get_secret("GEMINI_MODEL", "gemini-2.0-flash")
-    try:
+
+    def _call(limit):
         r = requests.post(
             f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
             params={"key": api_key},
             json={
                 "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"temperature": 0.2, "maxOutputTokens": max_tokens},
+                "generationConfig": {"temperature": 0.2, "maxOutputTokens": limit},
             },
-            timeout=45,
+            timeout=60,
         )
         r.raise_for_status()
-        parts = r.json()["candidates"][0]["content"]["parts"]
-        out = "".join(p.get("text", "") for p in parts).strip()
+        cand = r.json()["candidates"][0]
+        parts = cand.get("content", {}).get("parts", [])
+        text = "".join(p.get("text", "") for p in parts).strip()
+        return text, cand.get("finishReason", "")
+
+    try:
+        out, reason = _call(max_tokens)
+        if reason == "MAX_TOKENS":  # 잘렸으면 한도 2배로 한 번 더
+            out2, _ = _call(max_tokens * 2)
+            if out2 and len(out2) >= len(out):
+                out = out2
         return out or None
     except Exception:
         return None
@@ -631,7 +643,7 @@ def gemini_summarize(title: str, body: str) -> str | None:
         "추측이나 사족은 넣지 마라.\n\n"
         f"[제목] {title}\n[본문] {text[:6000]}"
     )
-    return _gemini_generate(prompt, max_tokens=500)
+    return _gemini_generate(prompt, max_tokens=1024)
 
 
 # ── AI 동향 브리핑 (기사 제목 기반) ──────────────────────────────────
@@ -676,7 +688,7 @@ def gemini_brief(period_label: str, titles_by_cat: dict) -> str | None:
         "규칙: 제목에 없는 사실은 지어내지 말 것. 과장·추측 금지. 간결하게.\n\n"
         f"[기사 제목 목록]\n{corpus[:12000]}"
     )
-    return _gemini_generate(prompt, max_tokens=1200)
+    return _gemini_generate(prompt, max_tokens=3000)
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -718,28 +730,25 @@ def article_dialog(row):
     # ── AI 3줄 요약 (Gemini) ──────────────────────────────
     if ai_enabled():
         cached = get_ai_summary(row["id"])
+        can_gen = bool(body_text or summary_text)
+        if can_gen:
+            # 캐시가 있으면 '다시 생성', 없으면 '생성' — 눌러 재생성 가능(잘린 요약 갱신)
+            if st.button("AI 요약 다시 생성" if cached else "AI 3줄 요약 생성", key="dlg_ai"):
+                with st.spinner("AI가 기사를 요약하는 중..."):
+                    out = gemini_summarize(row["title"], body_text or summary_text)
+                if out:
+                    save_ai_summary(row["id"], out)
+                    cached = out
+                else:
+                    st.warning("요약을 생성하지 못했습니다. (본문이 짧거나 API 오류)")
         if cached:
             st.markdown(
                 f'<div class="reader-summary"><b>AI 요약</b><br>'
                 f'{html.escape(cached).replace(chr(10), "<br>")}</div>',
                 unsafe_allow_html=True,
             )
-        else:
-            if body_text or summary_text:
-                if st.button("AI 3줄 요약 생성", key="dlg_ai"):
-                    with st.spinner("AI가 기사를 요약하는 중..."):
-                        out = gemini_summarize(row["title"], body_text or summary_text)
-                    if out:
-                        save_ai_summary(row["id"], out)
-                        st.markdown(
-                            f'<div class="reader-summary"><b>AI 요약</b><br>'
-                            f'{html.escape(out).replace(chr(10), "<br>")}</div>',
-                            unsafe_allow_html=True,
-                        )
-                    else:
-                        st.warning("요약을 생성하지 못했습니다. (본문이 짧거나 API 오류)")
-            else:
-                st.caption("본문이 없어 AI 요약을 만들 수 없습니다. 원문을 확인하세요.")
+        elif not can_gen:
+            st.caption("본문이 없어 AI 요약을 만들 수 없습니다. 원문을 확인하세요.")
 
     st.divider()
     on = row["id"] in scrap_ids
