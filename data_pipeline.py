@@ -102,6 +102,17 @@ def load_keyword_config() -> dict:
     return DEFAULT_CONFIG
 
 
+def matches_groups(text: str, groups: list[list[str]]) -> bool:
+    """구독 조건(그룹 사이 AND, 그룹 안 OR)이 기사 텍스트에서 실제로 성립하는지 검증.
+    구글 뉴스는 관련기사 링크 등 페이지 부속 텍스트까지 검색해 엉뚱한 기사를
+    끼워 넣는 경우가 있어, 제목·요약·본문에 키워드가 진짜 있는지 재확인한다."""
+    low = (text or "").lower()
+    return all(
+        any(w.strip().lower() in low for w in g if w.strip())
+        for g in groups if g
+    )
+
+
 def build_query(groups: list[list[str]]) -> str:
     """동의어 그룹 목록 → 구글 뉴스 검색식.
     [["AI","인공지능"], ["특허","디자인"]] → ("AI" OR "인공지능") ("특허" OR "디자인")
@@ -443,6 +454,11 @@ def collect_google_news(subscriptions: list[dict], known_links: set, known_title
                     summary = clean_html(entry.get("summary", ""))
                     if len(summary) < 10 or summary.startswith(title[:20]):
                         summary = title
+
+                # 2차 검증: 기사 텍스트에 구독 키워드가 실제로 있는지 확인
+                if not matches_groups(f"{title} {summary} {content}", sub.get("groups", [])):
+                    print(f"  - 제외(키워드 불일치): {title[:40]}")
+                    continue
 
                 # 원문 복원 실패 시 구글 검색 링크로 대체 (봇 확인 페이지 방지)
                 if real_url:
