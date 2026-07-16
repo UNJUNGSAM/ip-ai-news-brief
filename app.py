@@ -332,6 +332,19 @@ a.scrap-btn.on {{ background: var(--accent); color: #fff; border-color: var(--ac
 /* AI 동향 브리핑 카드 안 마크다운 서식 */
 div[data-testid="stContainer"] h3 {{ font-size: 1.05rem; color: var(--ink); margin: .6rem 0 .3rem; font-weight: 800; }}
 div[data-testid="stContainer"] p, div[data-testid="stContainer"] li {{ color: var(--ink-2); line-height: 1.7; }}
+/* 기사 팝업 — 부드러운 페이드인 (깜빡임 완화) */
+div[data-testid="stDialog"] div[role="dialog"],
+div[data-baseweb="modal"] div[role="dialog"] {{
+    animation: dlgFadeIn .3s ease-out;
+}}
+@keyframes dlgFadeIn {{
+    from {{ opacity: 0; transform: translateY(14px) scale(.985); }}
+    to   {{ opacity: 1; transform: none; }}
+}}
+/* 팝업 배경(어두운 막)도 서서히 */
+div[data-testid="stDialog"] {{ animation: dlgDim .25s ease-out; }}
+@keyframes dlgDim {{ from {{ opacity: 0; }} to {{ opacity: 1; }} }}
+
 /* 기사 팝업 상단 'AI 요약' 버튼 — 테두리가 번쩍이는 강조 버튼 */
 .st-key-dlg_ai button {{
     border: 2px solid var(--accent) !important; color: var(--accent) !important;
@@ -944,32 +957,38 @@ rail_col, feed_col = st.columns([1, 3.7], gap="medium")
 with rail_col:
     counts = df_v["category"].value_counts()
     nav = ['<div class="rail">']
+    # 내비게이션 일관성 규칙:
+    #  · 기간(보기) 전환 → 현재 카테고리·소스 유지 (팀 스크랩에 있었다면 전체로)
+    #  · 카테고리/소스 클릭 → 기사 목록이 보여야 하므로, 트렌드에 있었다면 '오늘' 피드로 전환
+    feed_view = "today" if view == "trend" else view
+    keep_cat = "전체" if sel_cat == "__scrap__" else sel_cat
+
     nav.append('<div class="sec">보기</div>')
     for k, label in VIEWS.items():
         on = " on" if (view == k and sel_cat != "__scrap__") else ""
-        nav.append(f'<a class="{on}" href="{make_url(view=k, cat="전체")}" target="_self">{label}</a>')
+        nav.append(f'<a class="{on}" href="{make_url(view=k, cat=keep_cat)}" target="_self">{label}</a>')
     nav.append('<div class="sec">카테고리</div>')
     on = " on" if sel_cat == "전체" else ""
-    nav.append(f'<a class="{on}" href="{make_url(cat="전체")}" target="_self">전체 보기 <span class="n">{len(df_v)}</span></a>')
+    nav.append(f'<a class="{on}" href="{make_url(view=feed_view, cat="전체")}" target="_self">전체 보기 <span class="n">{len(df_v)}</span></a>')
     for c in ALL_CATEGORIES:
         on = " on" if sel_cat == c else ""
         dot = CAT_CHART.get(c, "#999")
         nav.append(
-            f'<a class="{on}" href="{make_url(cat=c)}" target="_self">'
+            f'<a class="{on}" href="{make_url(view=feed_view, cat=c)}" target="_self">'
             f'<span><span class="dot" style="background:{dot}"></span>{html.escape(c)}</span>'
             f'<span class="n">{counts.get(c, 0)}</span></a>'
         )
     # 팀 공용 스크랩 (로그인 없이 누구나)
     on = " on" if sel_cat == "__scrap__" else ""
-    nav.append(f'<a class="{on}" href="{make_url(cat="__scrap__")}" target="_self">팀 스크랩 <span class="n">{len(scrap_items)}</span></a>')
+    nav.append(f'<a class="{on}" href="{make_url(view=feed_view, cat="__scrap__")}" target="_self">팀 스크랩 <span class="n">{len(scrap_items)}</span></a>')
     top_srcs = df_v["source"].value_counts().head(10)
     if len(top_srcs) > 1:
         nav.append('<div class="sec">소스</div>')
         on = " on" if sel_src == "전체" else ""
-        nav.append(f'<a class="{on}" href="{make_url(src="전체")}" target="_self">전체</a>')
+        nav.append(f'<a class="{on}" href="{make_url(view=feed_view, src="전체")}" target="_self">전체</a>')
         for s, cnt in top_srcs.items():
             on = " on" if sel_src == s else ""
-            nav.append(f'<a class="{on}" href="{make_url(src=s)}" target="_self">{html.escape(str(s))} <span class="n">{cnt}</span></a>')
+            nav.append(f'<a class="{on}" href="{make_url(view=feed_view, src=s)}" target="_self">{html.escape(str(s))} <span class="n">{cnt}</span></a>')
     nav.append("</div>")
     st.markdown("".join(nav), unsafe_allow_html=True)
     st.write("")
