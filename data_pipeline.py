@@ -332,10 +332,21 @@ ERROR_PAGE_SIGNS = [
     "점검 중입니다", "주소가 잘못", "찾으시는 페이지", "변경 또는 삭제",
 ]
 
-# 본문이 아닌 사이트 메뉴/광고 문단을 걸러내는 문구 목록
+# 본문이 아닌 사이트 메뉴/광고/저작권 문단을 걸러내는 문구 목록
 JUNK_PARAGRAPH_SIGNS = [
-    "즐겨찾기", "시작페이지", "회원가입", "로그인", "무단전재", "재배포 금지",
-    "구독하기", "네이버 뉴스스탠드", "저작권자 ©", "패밀리사이트",
+    "즐겨찾기", "시작페이지", "회원가입", "로그인", "무단전재", "무단 전재",
+    "재배포 금지", "구독하기", "구독신청", "네이버 뉴스스탠드", "저작권자 ©",
+    "패밀리사이트", "저작권보호", "개인정보취급방침", "개인정보처리방침",
+    "광고안내", "기사제보", "정기간행물", "등록번호", "청소년보호책임자",
+    "발행·편집인", "All rights reserved", "Copyright", "ⓒ",
+]
+
+# 언론사 본문 영역 선택자 (위에서부터 우선 적용 — 없으면 페이지 전체 <p>)
+CONTENT_SELECTORS = [
+    "#article-view-content-div",   # ndsoft 계열 (특허뉴스 등 다수 전문지·지역지)
+    "#articleBody", "#article-body", "#newsct_article", "#articeBody",
+    "[itemprop='articleBody']", ".article_body", ".article-body",
+    ".news_end", ".article_txt", ".view_con", "article",
 ]
 
 
@@ -348,12 +359,26 @@ def fetch_article_body(url: str) -> str:
         soup = BeautifulSoup(resp.text, "html.parser")
         for bad in soup.find_all(["script", "style", "nav", "footer", "header", "aside"]):
             bad.decompose()
-        paragraphs = [p.get_text(strip=True) for p in soup.find_all("p")]
+
+        # 1) 본문 영역을 정확히 찾을 수 있으면 그 안에서만 추출
+        container = None
+        for sel in CONTENT_SELECTORS:
+            try:
+                container = soup.select_one(sel)
+            except Exception:
+                container = None
+            if container is not None:
+                break
+        scope = container if container is not None else soup
+
+        paragraphs = [p.get_text(strip=True) for p in scope.find_all("p")]
+        if not paragraphs and container is not None:
+            paragraphs = [container.get_text(" ", strip=True)]
         clean_paras = [
             p for p in paragraphs
             if len(p) > 30 and not any(sign in p for sign in JUNK_PARAGRAPH_SIGNS)
         ]
-        body = " ".join(clean_paras)
+        body = re.sub(r"\s+", " ", " ".join(clean_paras)).strip()
         if len(body) < 80 or any(sign in body[:250] for sign in ERROR_PAGE_SIGNS):
             return ""  # 오류 페이지이거나 본문 추출 실패
         return body[:3000]
@@ -419,9 +444,17 @@ def collect_google_news(subscriptions: list[dict], known_links: set, known_title
                     if len(summary) < 10 or summary.startswith(title[:20]):
                         summary = title
 
+                # 원문 복원 실패 시 구글 검색 링크로 대체 (봇 확인 페이지 방지)
+                if real_url:
+                    final_link = real_url
+                elif "news.google.com" in link:
+                    final_link = f"https://news.google.com/search?q={quote(title)}&hl=ko&gl=KR&ceid=KR:ko"
+                else:
+                    final_link = link
+
                 articles.append({
                     "title": title,
-                    "link": real_url or link,
+                    "link": final_link,
                     "category": name,
                     "date": pub_date,
                     "summary": summary,

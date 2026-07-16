@@ -170,23 +170,43 @@ def verify_token(token: str) -> str | None:
         return None
 
 
-def set_auth_cookie(token: str, max_age: int = 31536000):
-    """쿠키 저장 후 페이지 새로고침 (다음 접속부터 자동 로그인)"""
+def try_set_cookie(token: str):
+    """자동 로그인용 쿠키 저장 시도 (차단돼도 무방 — 주소의 토큰이 로그인을 유지함)"""
     components_html(f"""<script>
-    try {{ window.parent.document.cookie = "nb_auth={token}; path=/; max-age={max_age}; SameSite=Lax"; }}
-    catch(e) {{ document.cookie = "nb_auth={token}; path=/; max-age={max_age}; SameSite=Lax"; }}
-    setTimeout(function() {{ try {{ window.parent.location.reload(); }} catch(e) {{ window.location.reload(); }} }}, 400);
+    var c = "nb_auth={token}; path=/; max-age=31536000; SameSite=Lax";
+    try {{ window.parent.document.cookie = c; }} catch(e) {{ try {{ document.cookie = c; }} catch(e2) {{}} }}
     </script>""", height=0)
 
 
+def get_auth_qp() -> str:
+    """주소에 붙은 유효한 로그인 토큰 (없으면 빈 문자열)"""
+    try:
+        t = st.query_params.get("auth", "")
+        if t and verify_token(t):
+            return t
+    except Exception:
+        pass
+    return ""
+
+
+def get_cookie_user() -> str | None:
+    try:
+        token = st.context.cookies.get("nb_auth", "")
+    except Exception:
+        token = ""
+    return verify_token(token) if token else None
+
+
 def get_current_user() -> str | None:
-    uid = st.session_state.get("auth_user")
+    # 1) 이 세션에서 로그인/로그아웃한 상태가 최우선 (""=명시적 로그아웃)
+    if "auth_user" in st.session_state:
+        uid = st.session_state.auth_user
+        return uid if (uid and uid in allowed_users()) else None
+    # 2) 주소의 로그인 토큰 → 3) 쿠키
+    t = get_auth_qp()
+    uid = verify_token(t) if t else None
     if not uid:
-        try:
-            token = st.context.cookies.get("nb_auth", "")
-        except Exception:
-            token = ""
-        uid = verify_token(token) if token else None
+        uid = get_cookie_user()
     # 목록에서 제외된 사번은 자동으로 접근 차단
     if uid and uid in allowed_users():
         return uid
@@ -487,16 +507,28 @@ scrap_items = user_scrap_list(current_user) if current_user else []
 scrap_ids = {x.get("id") for x in scrap_items}
 
 
+AUTH_QP = get_auth_qp()
+
+
 def make_url(**over) -> str:
     params = {"view": view, "cat": sel_cat, "src": sel_src}
+    if AUTH_QP:
+        params["auth"] = AUTH_QP  # 링크 이동 시에도 로그인 유지
     params.update(over)
     parts = []
     for k, v in params.items():
         v = str(v)
-        if k != "view" and (not v or v == "전체"):
+        if k not in ("view", "auth") and (not v or v == "전체"):
             continue
         parts.append(f"{k}={quote(v)}")
     return "?" + "&".join(parts)
+
+
+def display_link(link: str, title: str) -> str:
+    """원문 복원이 안 된 구글 중계링크는 항상 열리는 구글뉴스 검색 링크로 대체"""
+    if "news.google.com/rss/articles" in str(link):
+        return f"https://news.google.com/search?q={quote(str(title))}&hl=ko&gl=KR&ceid=KR:ko"
+    return str(link)
 
 
 # 기간 필터
@@ -528,6 +560,7 @@ def items_to_frame(items: list[dict]) -> pd.DataFrame:
 def to_excel_bytes(frame: pd.DataFrame) -> bytes:
     x = frame.copy()
     x["keywords"] = x["keywords"].map(lambda ks: ", ".join(ks) if isinstance(ks, list) else str(ks))
+    x["link"] = [display_link(l, t) for l, t in zip(x["link"], x["title"])]
     x = x[list(EXPORT_COLS)].rename(columns=EXPORT_COLS)
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as w:
@@ -570,7 +603,7 @@ def to_pdf_bytes(items: list[dict], subtitle: str) -> bytes | None:
                 pdf.set_font("Nanum", size=9.5)
                 pdf.set_text_color(85, 93, 104)
                 pdf.multi_cell(0, 5.5, summ[:400], new_x="LMARGIN", new_y="NEXT")
-            link = str(a.get("link", ""))
+            link = display_link(a.get("link", ""), a.get("title", ""))
             if link:
                 pdf.set_font("Nanum", size=7.5)
                 pdf.set_text_color(11, 87, 208)
@@ -589,7 +622,7 @@ def to_pdf_bytes(items: list[dict], subtitle: str) -> bytes | None:
 def article_dialog(row):
     color = CAT_CHART.get(row["category"], "#666")
     title_esc = html.escape(row["title"])
-    link_esc = html.escape(row["link"], quote=True)
+    link_esc = html.escape(display_link(row["link"], row["title"]), quote=True)
     date_str = row["date_dt"].strftime("%Y.%m.%d")
 
     body_text = row["content"] or ""
@@ -639,8 +672,8 @@ def login_dialog(msg: str = ""):
         u = uid.strip()
         if u and u in allowed_users() and pw.strip() == u:
             st.session_state.auth_user = u
-            st.success("로그인 완료 — 잠시만 기다려 주세요.")
-            set_auth_cookie(make_token(u))
+            st.query_params["auth"] = make_token(u)  # 주소에 로그인 토큰 유지
+            st.rerun()
         else:
             st.error("사번 또는 비밀번호가 올바르지 않습니다.")
 
@@ -761,6 +794,10 @@ st.markdown(f"""
 <div class="masthead-rule"></div>
 """, unsafe_allow_html=True)
 
+# 로그인 상태인데 자동로그인 쿠키가 없으면 저장 시도 (차단돼도 주소 토큰으로 유지됨)
+if current_user and get_cookie_user() != current_user:
+    try_set_cookie(make_token(current_user))
+
 if df.empty:
     st.info("아직 수집된 뉴스가 없습니다. `python data_pipeline.py`를 실행하세요.")
     st.stop()
@@ -814,8 +851,12 @@ with rail_col:
             ok, msg = trigger_collect()
             (st.success if ok else st.error)(msg)
         if st.button("로그아웃", width="stretch"):
-            st.session_state.auth_user = None
-            set_auth_cookie("", max_age=0)
+            st.session_state.auth_user = ""
+            try:
+                del st.query_params["auth"]
+            except Exception:
+                pass
+            st.rerun()
     else:
         if st.button("로그인", type="primary", width="stretch"):
             need_login_msg = need_login_msg or " "
