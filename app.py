@@ -5,7 +5,8 @@
 ════════════════════════════════════════════════════════════════════
  조간신문 스타일 피드 + 기사 팝업 + 로그인/스크랩 + 엑셀·PDF 내보내기
  - 내비게이션·카드는 순수 HTML 링크(쿼리 파라미터) 기반
- - 로그인: 쿠키(nb_auth) 기반 자동 로그인
+ - 로그인: 사번(ALLOWED_USERS) + 쿠키(nb_auth) 기반 자동 로그인
+   (쓰기=components.html JS, 읽기=st.context.cookies)
  - 계정·스크랩 데이터: GitHub 저장소 store 브랜치(users.json/scraps.json)
    → main 브랜치가 아니므로 저장해도 앱이 재배포되지 않음
  실행: streamlit run app.py
@@ -170,16 +171,31 @@ def verify_token(token: str) -> str | None:
         return None
 
 
-def try_set_cookie(token: str):
-    """자동 로그인용 쿠키 저장 시도 (차단돼도 무방 — 주소의 토큰이 로그인을 유지함)"""
+# 자동 로그인용 브라우저 쿠키 (닫아도 1년간 유지)
+# — 쓰기: components.html 안의 순수 JS(document.cookie), 읽기: st.context.cookies
+COOKIE_NAME = "nb_auth"
+
+
+def write_cookie_html(token: str, max_age: int = 31536000):
+    """브라우저에 로그인 토큰 쿠키를 저장(또는 max_age=0으로 삭제).
+    이 함수는 st.rerun() 직전이 아니라 메인 흐름에서 렌더되어야 실제로 실행된다."""
     components_html(f"""<script>
-    var c = "nb_auth={token}; path=/; max-age=31536000; SameSite=Lax";
-    try {{ window.parent.document.cookie = c; }} catch(e) {{ try {{ document.cookie = c; }} catch(e2) {{}} }}
+    var c = "{COOKIE_NAME}={token}; path=/; max-age={max_age}; SameSite=Lax";
+    try {{ document.cookie = c; }} catch(e) {{}}
+    try {{ parent.document.cookie = c; }} catch(e) {{}}
     </script>""", height=0)
 
 
+def get_cookie_user() -> str | None:
+    try:
+        token = st.context.cookies.get(COOKIE_NAME, "")
+    except Exception:
+        token = ""
+    return verify_token(token) if token else None
+
+
 def get_auth_qp() -> str:
-    """주소에 붙은 유효한 로그인 토큰 (없으면 빈 문자열)"""
+    """주소에 붙은 유효한 로그인 토큰 (구버전 북마크 호환용)"""
     try:
         t = st.query_params.get("auth", "")
         if t and verify_token(t):
@@ -189,24 +205,16 @@ def get_auth_qp() -> str:
     return ""
 
 
-def get_cookie_user() -> str | None:
-    try:
-        token = st.context.cookies.get("nb_auth", "")
-    except Exception:
-        token = ""
-    return verify_token(token) if token else None
-
-
 def get_current_user() -> str | None:
     # 1) 이 세션에서 로그인/로그아웃한 상태가 최우선 (""=명시적 로그아웃)
     if "auth_user" in st.session_state:
         uid = st.session_state.auth_user
         return uid if (uid and uid in allowed_users()) else None
-    # 2) 주소의 로그인 토큰 → 3) 쿠키
-    t = get_auth_qp()
-    uid = verify_token(t) if t else None
+    # 2) 브라우저 쿠키의 토큰 → 3) 주소의 토큰(구버전 호환)
+    uid = get_cookie_user()
     if not uid:
-        uid = get_cookie_user()
+        t = get_auth_qp()
+        uid = verify_token(t) if t else None
     # 목록에서 제외된 사번은 자동으로 접근 차단
     if uid and uid in allowed_users():
         return uid
@@ -332,6 +340,8 @@ html, body, [class*="css"] {{ font-family: var(--font-body); }}
 header[data-testid="stHeader"] {{ display: none; }}
 .block-container {{ padding-top: 1.2rem; max-width: 1200px; }}
 iframe[height="0"] {{ display:none; }}
+/* 자동로그인 쿠키 쓰기용 숨은 컴포넌트 */
+div[data-testid="stElementContainer"]:has(> iframe[height="0"]) {{ display:none !important; }}
 
 .masthead {{ text-align: center; padding: .2rem 0 .7rem; }}
 .masthead .kicker {{ font-size: .75rem; letter-spacing: .35em; color: var(--ink-3); text-transform: uppercase; margin-bottom: .3rem; }}
@@ -686,7 +696,8 @@ def login_dialog(msg: str = ""):
         u = uid.strip()
         if u and u in allowed_users() and pw.strip() == u:
             st.session_state.auth_user = u
-            st.query_params["auth"] = make_token(u)  # 주소에 로그인 토큰 유지
+            # 다음 실행(메인 흐름)에서 쿠키를 저장하도록 예약 → 자동 로그인
+            st.session_state._pending_cookie = make_token(u)
             st.rerun()
         else:
             st.error("사번 또는 비밀번호가 올바르지 않습니다.")
@@ -808,9 +819,14 @@ st.markdown(f"""
 <div class="masthead-rule"></div>
 """, unsafe_allow_html=True)
 
-# 로그인 상태인데 자동로그인 쿠키가 없으면 저장 시도 (차단돼도 주소 토큰으로 유지됨)
-if current_user and get_cookie_user() != current_user:
-    try_set_cookie(make_token(current_user))
+# 예약된 쿠키 쓰기/삭제 실행 (로그인 시 토큰 저장, 로그아웃 시 삭제)
+# — 메인 흐름에서 렌더되므로 JS가 실제로 실행되어 브라우저에 반영됨
+if "_pending_cookie" in st.session_state:
+    tok = st.session_state.pop("_pending_cookie")
+    if tok:
+        write_cookie_html(tok)               # 로그인 토큰 저장(1년)
+    else:
+        write_cookie_html("", max_age=0)     # 로그아웃 — 쿠키 삭제
 
 if df.empty:
     st.info("아직 수집된 뉴스가 없습니다. `python data_pipeline.py`를 실행하세요.")
@@ -866,6 +882,7 @@ with rail_col:
             (st.success if ok else st.error)(msg)
         if st.button("로그아웃", width="stretch"):
             st.session_state.auth_user = ""
+            st.session_state._pending_cookie = ""  # 다음 실행에서 쿠키 삭제
             try:
                 del st.query_params["auth"]
             except Exception:
