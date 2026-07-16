@@ -524,9 +524,23 @@ def make_url(**over) -> str:
     return "?" + "&".join(parts)
 
 
+def is_broken_link(link: str) -> bool:
+    """열리지 않는(깨진) 링크인지 판정"""
+    link = str(link or "")
+    if not link:
+        return True
+    if "news.google.com/rss/articles" in link:      # 미복원 구글 중계링크
+        return True
+    if "image_popup" in link or "/tools/" in link:  # 이미지 팝업 등 오추출 링크
+        return True
+    if re.search(r"\?[A-Za-z_]+=?$", link):          # ?param / ?param= 로 끝(값 잘림)
+        return True
+    return False
+
+
 def display_link(link: str, title: str) -> str:
-    """원문 복원이 안 된 구글 중계링크는 항상 열리는 구글뉴스 검색 링크로 대체"""
-    if "news.google.com/rss/articles" in str(link):
+    """깨진 링크는 항상 열리는 구글뉴스 검색 링크로 대체 (제목으로 원문 찾기)"""
+    if is_broken_link(link):
         return f"https://news.google.com/search?q={quote(str(title))}&hl=ko&gl=KR&ceid=KR:ko"
     return str(link)
 

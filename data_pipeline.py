@@ -291,6 +291,20 @@ def collect_moip(known_links: set, known_titles: set) -> list[dict]:
 # 수집기 2 — 구글 뉴스 RSS (구독 키워드 검색)
 # ════════════════════════════════════════════════════════════════════
 
+def is_broken_link(link: str) -> bool:
+    """열리지 않는(깨진) 링크인지 판정 — 값이 잘린 URL, 이미지팝업, 미복원 중계링크"""
+    link = str(link or "")
+    if not link:
+        return True
+    if "news.google.com/rss/articles" in link:
+        return True
+    if "image_popup" in link or "/tools/" in link:
+        return True
+    if re.search(r"\?[A-Za-z_]+=?$", link):  # ?param 또는 ?param= 로 끝(값 없음)
+        return True
+    return False
+
+
 def resolve_gnews_link(link: str) -> str | None:
     """구글 뉴스 중계 링크에서 원문 기사 URL 복원 시도 (실패해도 무방)"""
     m = re.search(r"articles/([^?/]+)", link)
@@ -471,13 +485,10 @@ def collect_google_news(subscriptions: list[dict], known_links: set, known_title
                     print(f"  - 제외(키워드 불일치): {title[:40]}")
                     continue
 
-                # 원문 복원 실패 시 구글 검색 링크로 대체 (봇 확인 페이지 방지)
-                if real_url:
-                    final_link = real_url
-                elif "news.google.com" in link:
-                    final_link = f"https://news.google.com/search?q={quote(title)}&hl=ko&gl=KR&ceid=KR:ko"
-                else:
-                    final_link = link
+                # 원문 복원에 성공했고 깨지지 않은 링크만 사용,
+                # 그 외에는 항상 열리는 구글뉴스 검색 링크로 대체
+                gsearch = f"https://news.google.com/search?q={quote(title)}&hl=ko&gl=KR&ceid=KR:ko"
+                final_link = real_url if (real_url and not is_broken_link(real_url)) else gsearch
 
                 articles.append({
                     "title": title,
