@@ -1,0 +1,68 @@
+# ════════════════════════════════════════════════════════════════
+#  앱 깨어있기 (Keep Alive)
+#  무료 Streamlit Cloud는 방문자가 없으면 앱을 재웁니다.
+#  실제 브라우저로 접속해 세션을 만들고, 잠들어 있으면 깨우기 버튼을
+#  눌러 업무시간에 항상 바로 열리도록 유지합니다.
+# ════════════════════════════════════════════════════════════════
+name: Keep App Awake
+
+on:
+  schedule:
+    # UTC 기준 → KST 07:00 / 11:00 / 15:00 / 19:00
+    - cron: "0 22 * * *"
+    - cron: "0 2 * * *"
+    - cron: "0 6 * * *"
+    - cron: "0 10 * * *"
+  workflow_dispatch:
+
+jobs:
+  wake:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Playwright
+        run: |
+          pip install playwright
+          playwright install --with-deps chromium
+
+      - name: Visit app (and wake if sleeping)
+        run: |
+          python - <<'EOF'
+          import re
+          import time
+
+          URL = "https://ip-ai-news-brief-unjungsam.streamlit.app"
+
+          try:
+              from playwright.sync_api import sync_playwright
+
+              with sync_playwright() as p:
+                  browser = p.chromium.launch()
+                  page = browser.new_page()
+                  page.goto(URL, timeout=120000, wait_until="domcontentloaded")
+                  time.sleep(10)
+
+                  # 잠자기 화면이면 깨우기 버튼 클릭
+                  try:
+                      btn = page.get_by_role("button", name=re.compile(r"back up|wake|get this app", re.I))
+                      if btn.count() > 0:
+                          btn.first.click()
+                          print("앱이 잠들어 있어 깨웠습니다. 부팅 대기...")
+                          time.sleep(75)
+                      else:
+                          print("앱이 깨어 있습니다.")
+                  except Exception as e:
+                      print("깨우기 확인 중 예외(무시):", e)
+
+                  # 실제 세션으로 잠시 머물러 방문 기록 남기기
+                  time.sleep(20)
+                  print("방문 완료. title:", page.title())
+                  browser.close()
+          except Exception as e:
+              # 어떤 오류든 워크플로는 실패로 표시하지 않음
+              print("keep-alive 예외(무시):", e)
+          EOF

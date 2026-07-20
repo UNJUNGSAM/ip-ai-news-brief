@@ -18,6 +18,7 @@
 | `data_pipeline.py` | 뉴스 수집기 → `data/news_YYYYMMDD.json` |
 | `config/keywords.json` | 구독 키워드 (쉼표=OR, 세미콜론=AND) |
 | `.github/workflows/daily_update.yml` | 자동 수집 스케줄 |
+| `.github/workflows/keep_alive.yml` | 앱 깨어있기 — KST 07/11/15/19시에 방문해 잠자기 방지 |
 | `app.py` | Streamlit 대시보드 |
 | `tools_backfill.py` | 구글뉴스 링크 원문 복원 보수 도구 (1회성) |
 | `store` 브랜치 | `users.json`(계정) · `scraps.json`(스크랩) — main과 분리되어 저장해도 재배포 안 됨 |
